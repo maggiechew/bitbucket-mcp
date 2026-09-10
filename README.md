@@ -61,8 +61,8 @@ Add to your Claude Code `settings.json` under `mcpServers`:
   "command": "node",
   "args": ["/path/to/bitbucket-mcp/dist/index.js"],
   "env": {
-    "BITBUCKET_USERNAME": "your-bitbucket-username",
-    "BITBUCKET_APP_PASSWORD": "your-app-password"
+    "BITBUCKET_EMAIL": "your-bitbucket-email",
+    "BITBUCKET_API_TOKEN": "your-api-token"
   }
 }
 ```

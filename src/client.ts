@@ -1,8 +1,8 @@
 const BASE_URL = "https://api.bitbucket.org/2.0";
 
 interface BitbucketAuth {
-  username: string;
-  appPassword: string;
+  email: string;
+  apiToken: string;
 }
 
 export interface PaginatedResponse<T> {
@@ -15,21 +15,21 @@ export interface PaginatedResponse<T> {
 }
 
 function getAuth(): BitbucketAuth {
-  const username = process.env.BITBUCKET_USERNAME;
-  const appPassword = process.env.BITBUCKET_APP_PASSWORD;
+  const email = process.env.BITBUCKET_EMAIL;
+  const apiToken = process.env.BITBUCKET_API_TOKEN;
 
-  if (!username || !appPassword) {
+  if (!email || !apiToken) {
     throw new Error(
-      "BITBUCKET_USERNAME and BITBUCKET_APP_PASSWORD environment variables are required",
+      "BITBUCKET_EMAIL and BITBUCKET_API_TOKEN environment variables are required",
     );
   }
 
-  return { username, appPassword };
+  return { email, apiToken };
 }
 
 function authHeader(): string {
-  const { username, appPassword } = getAuth();
-  return "Basic " + Buffer.from(`${username}:${appPassword}`).toString("base64");
+  const { email, apiToken } = getAuth();
+  return "Basic " + Buffer.from(`${email}:${apiToken}`).toString("base64");
 }
 
 export async function bitbucketRequest<T>(
