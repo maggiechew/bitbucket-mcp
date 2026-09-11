@@ -91,6 +91,24 @@ Note: `mcpServers` in `~/.claude/settings.json` is not read by Claude Code. User
 
 When you're working inside a project that has a `bitbucket.org` git remote, the workspace and repo slug are auto-detected from `git remote get-url origin`. You can also pass `workspace` and `repo_slug` explicitly to any tool to target a different repo.
 
+## Suggested usage
+
+The server returns compact JSON records and never formats output for a human reader. Deciding which tools answer a question, composing calls, and rendering the result are the caller's job. A clean way to set this up in Claude Code:
+
+### Read path: a dedicated agent + rendering skill
+
+A read-only subagent (e.g. `bitbucket-fetcher`) receives the user's question verbatim, calls the appropriate read tools, and renders the result using a rendering skill (e.g. `bitbucket-brief`) that defines fixed output shapes — a PR list table, a single-PR block, a builds/activity view. The agent keeps raw API JSON out of the coordinator's context and returns a finished brief that gets relayed to the user without re-summarizing.
+
+The agent should have access to the read-only tools only: `listPullRequests`, `listMyPullRequests`, `getPullRequest`, `getPullRequestBuildStatuses`, `getPullRequestCommits`, `getPullRequestComments`, `getPullRequestActivity`, `findUser`, `getCurrentUser`.
+
+### Write path: the coordinator
+
+Write tools (`createPullRequest`, `updatePullRequest`, `addPullRequestComment`, etc.) stay with the coordinator or a writing agent, not the read-only fetcher. A PR description skill can compose the text and post it through the MCP server in a single flow.
+
+### Permissions
+
+Register the read-only tools in your Claude Code permissions allowlist so they run without approval prompts. Leave write tools on the default approval flow.
+
 ## API
 
 Targets the [Bitbucket Cloud REST API v2.0](https://developer.atlassian.com/cloud/bitbucket/rest/intro/).
