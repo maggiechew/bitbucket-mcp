@@ -1,25 +1,25 @@
 # bitbucket-mcp
 
-A Bitbucket Cloud MCP server for Claude Code. Lets you interact with pull requests and comments without leaving the terminal.
+A Bitbucket Cloud MCP server for Claude Code. Lets you interact with pull requests, comments and, optionally, their Jenkins builds without leaving the terminal.
 
 ## Scope
 
 This server fetches and shapes Bitbucket data. It returns compact JSON records and never renders them for a reader. Deciding which tool answers a question, composing several calls, and formatting the result for a person all belong to the caller (in Claude Code, the `bitbucket-fetcher` agent and the skills it loads).
 
-## Tools (20)
+## Tools (24)
 
 Listing tools return a compact record per PR (id, title, state, draft, author, branches, local timestamps, counts, URL) and fetch every page up to `limit` (default 25, max 100), prefixed with a line saying how many were returned and whether more exist. When 20 or fewer PRs come back, each also carries `build` (latest build status: state, name, link, commit, total_statuses) and `review` (reviewers, approved_by, changes_requested_by, pending). Pass `include_details` to force this on or off, and `verbose: true` for the raw API objects.
 
 By default only PRs updated in the last 30 days are returned. Pass `updated_within_days` to widen the window, or `0` for no cutoff. Filter server-side wherever possible (`author`, `reviewer`, `title_contains`, `states`) rather than pulling a large list and filtering it afterwards.
 
 ### Pull Requests
-- **listPullRequests** — list PRs in a repo. Filters: `states` (one or more of OPEN/MERGED/DECLINED/SUPERSEDED), `author` and `reviewer` (`me`, a name fragment, or a uuid), `title_contains`, `updated_within_days`, `sort` (default `-updated_on`), `limit`
+- **listPullRequests** — list PRs in a repo. Filters: `states` (one or more of OPEN/MERGED/DECLINED/SUPERSEDED), `author` and `reviewer` (`me`, a name fragment, or a uuid; an array matches any of several people in one call), `title_contains`, `updated_within_days`, `sort` (default `-updated_on`), `limit`
 - **listMyPullRequests** — PRs authored by the authenticated user across every repo in the workspace. Same filters minus `author`, `reviewer`, `sort`
 - **getPullRequest** — a single PR: metadata, description, latest build status, reviewers and review state
 - **getPullRequestBuildStatuses** — every build status reported on a PR, newest first
 - **getPullRequestDiffstat** — per-file change summary (status, path, lines added and removed) with a totals line. Sizes a PR without fetching the diff; `verbose: true` for the raw objects
-- **createPullRequest** — create a PR with title, description, reviewers
-- **updatePullRequest** — edit title, description, destination branch, reviewers
+- **createPullRequest** — create a PR with title, description, reviewers (names or uuids)
+- **updatePullRequest** — edit title, description, destination branch, reviewers. `add_reviewers` and `remove_reviewers` adjust the current list in one call; `reviewers` replaces it. People are names or uuids
 - **getPullRequestCommits** — list commits on a PR
 - **createDraftPullRequest** — create a draft PR
 - **publishDraftPullRequest** — mark a draft as ready for review
@@ -38,11 +38,21 @@ Liking a comment is not offered: the public Bitbucket Cloud API has no endpoint 
 ### Activity
 - **getPullRequestActivity** — chronological log of PR events (comments, approvals, pushes)
 
+### Jenkins (optional, see setup)
+- **getPullRequestBuildReport** — explains one PR build. Returns `outcome` (`passed`, `in_progress`, `aborted`, `tests_failed`, `failed`), the stage the build `died_in`, the stages that failed in flight, were aborted, or never ran as a consequence, the failing tests with the file, example, error line and how many builds each has been failing, and for every failing test its `alignment` with the files the PR author's own commits changed: `direct` (the test itself changed), `subject` (the code it names changed), `neighbourhood` (the same corner of the codebase changed), or `none`. Alignment is measured against the author's commits rather than the PR diffstat so a merge from upstream does not claim its inherited changes as the author's; each failing test also carries `changed_by`, the PR commits that touched it with their authors. When a PR has more than 50 commits the diffstat is used instead and `alignment_basis` says so. A `failed` outcome carries a `classification` matched from the console (merge_conflict, checkout_failed, formatting, lint, dependency_audit, quality_gate, coverage, timeout, agent_offline, disk_full) or `unrecognised`, and always the console lines that named the failure plus a console link, so an unfamiliar failure still comes back with its evidence. `build_number` selects an older build of the same PR, and an `in_progress` report carries `last_completed_build` so the caller can diagnose the most recent finished run instead
+- **retriggerPullRequestBuild** — queues a new build of the PR's Jenkins job with a plain POST, no push or commit involved. Checks Jenkins health first and refuses, naming the reason, while Jenkins is quieting down or has no online agents; `force: true` queues it anyway. Returns the queue item URL and the job URL; the build has not run when the call returns
+- **discoverJenkinsPipeline** — samples the most recent completed build of each job in a multibranch folder and describes the pipeline as observed: stage names and which run in parallel, outcome counts, how often a test report is published, and the failure signatures seen with example console lines. Meant for building and refreshing a local manifest of how a given Jenkins behaves, rather than hardcoding one pipeline's shape
+
+### CI health
+- **getCiHealth** — whether CI is up right now: Bitbucket Cloud's public status page (overall indicator, components not operational, open incidents) and, when Jenkins is configured, whether it is reachable, quieting down for a restart, its queue depth and oldest wait, and any offline agents with the reason. Available without Jenkins; the Jenkins half appears when it is configured. A `failed` build report also carries `bitbucket_incidents`, the status-page incidents that overlapped the build, and any Bitbucket API error of 500 or above is suffixed with what the status page reports at that moment
+
 ### Users
-- **findUser** — search workspace members by name fragment; returns every match with its uuid
+- **findUsers** — resolve one name or several the way every other tool does. Per name: `resolved`, the single member the server picks (a whole name beats a whole word, beats a word that starts with the fragment, beats a substring, so `stan` is Stanley before it is Tristan), or null when the strongest matches tie; and `candidates`, every match with its `match` strength. Not a required first step: `author`, `reviewer` and the reviewer parameters take names directly and resolve them identically
 - **getCurrentUser** — the user the server is authenticated as
 
 ## Setup
+
+The Bitbucket tools need only the Bitbucket token. The Jenkins tools are registered only when `JENKINS_URL` and `JENKINS_API_TOKEN` are set; without them the server runs with the other 21 tools and nothing else changes. `getCiHealth` is always present; its Jenkins half appears when Jenkins is configured.
 
 ### 1. Create a Bitbucket API token
 
@@ -50,10 +60,25 @@ Go to **Atlassian account > Security > API tokens** and create a token with thes
 - `read:repository:bitbucket`
 - `read:pullrequest:bitbucket`
 - `read:user:bitbucket` (resolves `me` to your account)
-- `read:workspace:bitbucket` (member lookup for `findUser` and name-based `author` filters)
+- `read:workspace:bitbucket` (member lookup for `findUsers` and name-based `author` filters)
 - `write:pullrequest:bitbucket`
 
 The server authenticates with your Atlassian account email plus this token (HTTP Basic). See [Bitbucket API tokens](https://support.atlassian.com/bitbucket-cloud/docs/api-tokens).
+
+### 1b. Jenkins (optional)
+
+Create a Jenkins API token from your user page (**your name > Security > API Token**) and set:
+
+```bash
+export JENKINS_URL=https://jenkins.example.com
+export JENKINS_API_TOKEN=your-jenkins-token
+```
+
+The Jenkins username defaults to `BITBUCKET_EMAIL`; set `JENKINS_USER` only when Jenkins knows you by a different name.
+
+The PR's Jenkins job is read from the URL in its Bitbucket build status, so the folder can be named anything. When a PR has no status yet, the multibranch convention `<repo slug>/PR-<id>` is tried instead. `discoverJenkinsPipeline` defaults its folder to the repo slug; pass `job_folder` when yours differs.
+
+When Jenkins is configured but unreachable (an internal host with the VPN down) or rejects the token, the Jenkins tools return an error naming the cause. The Bitbucket tools are unaffected either way.
 
 ### 2. Build
 
@@ -84,6 +109,15 @@ claude mcp add bitbucket --scope user \
   -- node /path/to/bitbucket-mcp/dist/index.js
 ```
 
+With Jenkins, add its two variables the same way, before the `--`:
+
+```bash
+  -e JENKINS_URL=https://jenkins.example.com \
+  -e 'JENKINS_API_TOKEN=${JENKINS_API_TOKEN}' \
+```
+
+The server name must come before the first `-e`, since `-e` takes every following value until the next flag. There is no edit command; to change the registration, `claude mcp remove bitbucket --scope user` and add it again. Paste the command as one line if a multi-line paste splits it.
+
 Verify with `claude mcp list`. It should show `bitbucket` as connected; a missing-variable warning means the export is not visible to the shell that launched Claude Code.
 
 Note: `mcpServers` in `~/.claude/settings.json` is not read by Claude Code. User-scope servers live in `~/.claude.json` via the command above.
@@ -98,17 +132,30 @@ The server returns compact JSON records and never formats output for a human rea
 
 ### Read path: a dedicated agent + rendering skill
 
-A read-only subagent (e.g. `bitbucket-fetcher`) receives the user's question verbatim, calls the appropriate read tools, and renders the result using a rendering skill (e.g. `bitbucket-brief`) that defines fixed output shapes — a PR list table, a single-PR block, a builds/activity view. The agent keeps raw API JSON out of the coordinator's context and returns a finished brief that gets relayed to the user without re-summarizing.
+A read-only subagent (e.g. `bitbucket-fetcher`) receives the user's question verbatim, calls the appropriate read tools, and renders the result using a rendering skill (e.g. `bitbucket-brief`) that defines fixed output shapes: a PR list table, a single-PR block, a comment thread, a build report. The agent keeps raw API JSON out of the coordinator's context and returns a finished brief that gets relayed to the user without re-summarizing. Every read goes through it, including CI health; the coordinator never calls a read tool itself.
 
-The agent should have access to the read-only tools only: `listPullRequests`, `listMyPullRequests`, `getPullRequest`, `getPullRequestBuildStatuses`, `getPullRequestCommits`, `getPullRequestComments`, `getPullRequestActivity`, `findUser`, `getCurrentUser`.
+The agent should have access to the read-only tools only: `listPullRequests`, `listMyPullRequests`, `getPullRequest`, `getPullRequestBuildStatuses`, `getPullRequestBuildReport`, `getPullRequestDiffstat`, `getPullRequestCommits`, `getPullRequestComments`, `getPullRequestActivity`, `discoverJenkinsPipeline`, `getCiHealth`, `findUsers`, `getCurrentUser`.
+
+Rules that keep the agent honest, learned the hard way:
+
+- **Pass the user's words, not a resolved target.** The coordinator hands over the question as asked and never substitutes a PR number or a person it worked out from the git log, a branch name, or a commit message. A recent-commits block looks like an answer key and is not one; the server resolves names and lists candidates when a name is ambiguous.
+- **Names go straight into the tools.** `author`, `reviewer` and the reviewer parameters accept names, and arrays of names, so "Bill's, Ryan's and Tommy's PRs" is one call. `findUsers` shows what a name resolves to and its candidates; use it after a tie is reported, not before every call.
+- **A named build number is a hard constraint.** "Build 2 of X" means `build_number: 2` on every candidate PR, never the latest build that happens to be on a list record.
+- **A question that assumes a failed build expects it found.** An `in_progress` report carries `last_completed_build`; diagnose that one and mention the run in progress in passing.
+- **Read `alignment` with `changed_by`.** `none` plus a `changed_by` commit by someone other than the PR author means the test arrived through a merge from upstream, and the brief should say whose commit changed it.
+- **Infrastructure gets named.** When a failure classifies as `agent_offline`, `timeout` or `unrecognised`, or the report lists `bitbucket_incidents`, the agent calls `getCiHealth` and reports what the services say rather than leaving the user to guess.
+
+### Jenkins manifest
+
+Pipelines differ, so the agent keeps its own notes on the one it reads. It stores the output of `discoverJenkinsPipeline` per repository (e.g. `~/.claude/jenkins/<workspace>-<repo>.json`), reads it before interpreting a build report, and refreshes it when the file is missing, a report names a stage the manifest does not list, a classification comes back `unrecognised`, or the manifest is older than a month. The manifest records what Jenkins shows: stages, parallel groups, outcome counts and failure signatures. Team conventions the tool cannot observe belong in the agent's instructions, not the manifest.
 
 ### Write path: the coordinator
 
-Write tools (`createPullRequest`, `updatePullRequest`, `addPullRequestComment`, etc.) stay with the coordinator or a writing agent, not the read-only fetcher. A PR description skill can compose the text and post it through the MCP server in a single flow.
+Write tools (`createPullRequest`, `updatePullRequest`, `addPullRequestComment`, `retriggerPullRequestBuild`, etc.) stay with the coordinator or a writing agent, not the read-only fetcher, and run only on the user's explicit go. A PR description skill can compose the text and post it through the MCP server in a single flow. The retrigger is a real build; the agent that diagnosed the failure may suggest it but never runs it.
 
 ### Permissions
 
-Register the read-only tools in your Claude Code permissions allowlist so they run without approval prompts. Leave write tools on the default approval flow.
+Register the read-only tools in your Claude Code permissions allowlist so they run without approval prompts. Leave every write tool, the retrigger included, on the default approval flow.
 
 ## API
 

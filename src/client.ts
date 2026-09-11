@@ -1,3 +1,4 @@
+import { bitbucketStatusNote } from "./bitbucket-status.js";
 const BASE_URL = "https://api.bitbucket.org/2.0";
 
 interface BitbucketAuth {
@@ -69,7 +70,8 @@ export async function bitbucketRequest<T>(
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Bitbucket API ${method} ${path} returned ${response.status}: ${text}`);
+    const note = response.status >= 500 ? await bitbucketStatusNote() : null;
+    throw new Error(`Bitbucket API ${method} ${path} returned ${response.status}: ${text}${note ? ` ${note}` : ""}`);
   }
 
   if (accept === "text/plain") {

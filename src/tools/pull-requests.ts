@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { bitbucketRequest, bitbucketPaginated, bitbucketAllPages } from "../client.js";
 import { resolveContext, resolveWorkspace } from "../git-context.js";
-import { resolveAuthorUuid } from "../users.js";
+import { resolveAuthorUuid, resolveUserUuids } from "../users.js";
 import {
   CompactPullRequest,
   RawPullRequest,
@@ -67,23 +67,57 @@ async function respond(
   return { content: [{ type: "text" as const, text }] };
 }
 
+const users = z.union([z.string(), z.array(z.string())]);
+
+async function userClause(field: string, workspace: string, people: string | string[]): Promise<string> {
+  const uuids = await resolveUserUuids(workspace, Array.isArray(people) ? people : [people]);
+  const clauses = uuids.map((uuid) => `${field}="${uuid}"`);
+  return clauses.length === 1 ? clauses[0] : `(${clauses.join(" OR ")})`;
+}
+
+function reviewerBodies(uuids: string[]): { uuid: string }[] {
+  return [...new Set(uuids)].map((uuid) => ({ uuid }));
+}
+
+async function adjustedReviewers(
+  workspace: string,
+  repoSlug: string,
+  pullRequestId: number,
+  add: string[],
+  remove: string[],
+): Promise<string[]> {
+  const [current, added, removed] = await Promise.all([
+    currentReviewerUuids(workspace, repoSlug, pullRequestId),
+    resolveUserUuids(workspace, add),
+    resolveUserUuids(workspace, remove),
+  ]);
+  return [...current, ...added].filter((uuid) => !removed.includes(uuid));
+}
+
+async function currentReviewerUuids(workspace: string, repoSlug: string, pullRequestId: number): Promise<string[]> {
+  const pr = await bitbucketRequest<{ reviewers?: { uuid: string }[] }>(
+    `/repositories/${workspace}/${repoSlug}/pullrequests/${pullRequestId}?fields=reviewers.uuid`,
+  );
+  return (pr.reviewers ?? []).map((reviewer) => reviewer.uuid);
+}
+
 export function registerPullRequestTools(server: McpServer): void {
   server.tool(
     "listPullRequests",
-    "List pull requests in a repository as compact records, each with latest build status and review state. Filter by author or reviewer ('me', a name fragment, or a uuid), by states, and by recency. Fetches every page up to limit.",
+    "List pull requests in a repository as compact records, each with latest build status and review state. Filter by author or reviewer ('me', a name fragment, or a uuid; pass an array to match any of several people in one call), by states, and by recency. Fetches every page up to limit.",
     {
       workspace: z.string().optional().describe("Bitbucket workspace (auto-detected from git remote if omitted)"),
       repo_slug: z.string().optional().describe("Repository slug (auto-detected from git remote if omitted)"),
-      author: z.string().optional().describe("Only PRs by this author: 'me', a name fragment (must match exactly one workspace member), or a uuid"),
-      reviewer: z.string().optional().describe("Only PRs where this user is a reviewer: 'me', a name fragment, or a uuid. Check review.pending to see whether they still need to act."),
+      author: users.optional().describe("Only PRs by this author, or any of these authors: 'me', a name as the user said it, or a uuid. Names resolve exactly as findUsers does; no lookup needed first"),
+      reviewer: users.optional().describe("Only PRs where this user, or any of these users, is a reviewer: 'me', a name fragment, or a uuid. Check review.pending to see whether they still need to act."),
       sort: z.string().optional().describe("Sort field, prefix '-' for descending (default: -updated_on)"),
       ...listSchema,
     },
     async ({ workspace, repo_slug, author, reviewer, sort, states, title_contains, updated_within_days, limit, include_details, verbose }) => {
       const ctx = resolveContext(workspace, repo_slug);
       const clauses = [stateClause(states?.length ? states : ["OPEN"])];
-      if (author) clauses.push(`author.uuid="${await resolveAuthorUuid(ctx.workspace, author)}"`);
-      if (reviewer) clauses.push(`reviewers.uuid="${await resolveAuthorUuid(ctx.workspace, reviewer)}"`);
+      if (author) clauses.push(await userClause("author.uuid", ctx.workspace, author));
+      if (reviewer) clauses.push(await userClause("reviewers.uuid", ctx.workspace, reviewer));
       const title = titleClause(title_contains);
       if (title) clauses.push(title);
       const since = updatedSinceClause(updated_within_days);
@@ -212,7 +246,7 @@ export function registerPullRequestTools(server: McpServer): void {
       source_branch: z.string().describe("Source branch name"),
       destination_branch: z.string().optional().describe("Destination branch (default: repo main branch)"),
       description: z.string().optional().describe("PR description (markdown)"),
-      reviewers: z.array(z.string()).optional().describe("Array of reviewer account UUIDs"),
+      reviewers: z.array(z.string()).optional().describe("Reviewers as names or uuids. Names resolve exactly as findUsers does, so pass them as the user said them; a genuine tie fails with the candidates listed"),
       close_source_branch: z.boolean().optional().describe("Close source branch on merge"),
     },
     async ({ workspace, repo_slug, title, source_branch, destination_branch, description, reviewers, close_source_branch }) => {
@@ -227,7 +261,7 @@ export function registerPullRequestTools(server: McpServer): void {
       if (description) body.description = description;
       if (close_source_branch !== undefined) body.close_source_branch = close_source_branch;
       if (reviewers?.length) {
-        body.reviewers = reviewers.map((uuid) => ({ uuid }));
+        body.reviewers = reviewerBodies(await resolveUserUuids(ctx.workspace, reviewers));
       }
 
       const result = await bitbucketRequest(
@@ -240,7 +274,7 @@ export function registerPullRequestTools(server: McpServer): void {
 
   server.tool(
     "updatePullRequest",
-    "Update a pull request (title, description, reviewers, destination branch)",
+    "Update a pull request: title, description, destination branch, reviewers. add_reviewers and remove_reviewers adjust the current reviewer list in one call; reviewers replaces it outright. People are names as the user said them, or uuids; names resolve exactly as findUsers does, so no lookup is needed first, and a genuine tie fails with the candidates listed.",
     {
       workspace: z.string().optional(),
       repo_slug: z.string().optional(),
@@ -248,15 +282,20 @@ export function registerPullRequestTools(server: McpServer): void {
       title: z.string().optional().describe("New title"),
       description: z.string().optional().describe("New description (markdown)"),
       destination_branch: z.string().optional().describe("New destination branch"),
-      reviewers: z.array(z.string()).optional().describe("Replace reviewers (account UUIDs)"),
+      reviewers: z.array(z.string()).optional().describe("Replace the reviewer list with these people (names or uuids; no lookup needed first)"),
+      add_reviewers: z.array(z.string()).optional().describe("Add these people to the current reviewers (names or uuids; no lookup needed first)"),
+      remove_reviewers: z.array(z.string()).optional().describe("Remove these people from the current reviewers (names or uuids; no lookup needed first)"),
     },
-    async ({ workspace, repo_slug, pull_request_id, title, description, destination_branch, reviewers }) => {
+    async ({ workspace, repo_slug, pull_request_id, title, description, destination_branch, reviewers, add_reviewers, remove_reviewers }) => {
       const ctx = resolveContext(workspace, repo_slug);
       const body: Record<string, unknown> = {};
       if (title) body.title = title;
       if (description) body.description = description;
       if (destination_branch) body.destination = { branch: { name: destination_branch } };
-      if (reviewers) body.reviewers = reviewers.map((uuid) => ({ uuid }));
+      if (reviewers) body.reviewers = reviewerBodies(await resolveUserUuids(ctx.workspace, reviewers));
+      if (add_reviewers?.length || remove_reviewers?.length) {
+        body.reviewers = reviewerBodies(await adjustedReviewers(ctx.workspace, ctx.repoSlug, pull_request_id, add_reviewers ?? [], remove_reviewers ?? []));
+      }
 
       const result = await bitbucketRequest(
         `/repositories/${ctx.workspace}/${ctx.repoSlug}/pullrequests/${pull_request_id}`,
