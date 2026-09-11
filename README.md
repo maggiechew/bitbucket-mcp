@@ -6,7 +6,7 @@ A Bitbucket Cloud MCP server for Claude Code. Lets you interact with pull reques
 
 This server fetches and shapes Bitbucket data. It returns compact JSON records and never renders them for a reader. Deciding which tool answers a question, composing several calls, and formatting the result for a person all belong to the caller (in Claude Code, the `bitbucket-fetcher` agent and the skills it loads).
 
-## Tools (19)
+## Tools (20)
 
 Listing tools return a compact record per PR (id, title, state, draft, author, branches, local timestamps, counts, URL) and fetch every page up to `limit` (default 25, max 100), prefixed with a line saying how many were returned and whether more exist. When 20 or fewer PRs come back, each also carries `build` (latest build status: state, name, link, commit, total_statuses) and `review` (reviewers, approved_by, changes_requested_by, pending). Pass `include_details` to force this on or off, and `verbose: true` for the raw API objects.
 
@@ -17,6 +17,7 @@ By default only PRs updated in the last 30 days are returned. Pass `updated_with
 - **listMyPullRequests** — PRs authored by the authenticated user across every repo in the workspace. Same filters minus `author`, `reviewer`, `sort`
 - **getPullRequest** — a single PR: metadata, description, latest build status, reviewers and review state
 - **getPullRequestBuildStatuses** — every build status reported on a PR, newest first
+- **getPullRequestDiffstat** — per-file change summary (status, path, lines added and removed) with a totals line. Sizes a PR without fetching the diff; `verbose: true` for the raw objects
 - **createPullRequest** — create a PR with title, description, reviewers
 - **updatePullRequest** — edit title, description, destination branch, reviewers
 - **getPullRequestCommits** — list commits on a PR

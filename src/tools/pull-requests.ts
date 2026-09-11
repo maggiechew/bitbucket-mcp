@@ -11,12 +11,14 @@ import {
   summarizeList,
 } from "../pull-request-format.js";
 import { enrichAll, EnrichedPullRequest, fetchBuildStatuses, summarizeReview } from "../pull-request-enrich.js";
+import { RawDiffstatEntry, compactDiffstatEntry, summarizeDiffstat } from "../diffstat-format.js";
 
 const PR_STATES = ["OPEN", "MERGED", "DECLINED", "SUPERSEDED"] as const;
 const MAX_LIMIT = 100;
 const DEFAULT_LIMIT = 25;
 const DEFAULT_UPDATED_WITHIN_DAYS = 30;
 const AUTO_DETAIL_THRESHOLD = 20;
+const DIFFSTAT_LIMIT = 500;
 
 const listSchema = {
   states: z.array(z.enum(PR_STATES)).optional().describe("PR states to include (default: [OPEN])"),
@@ -170,6 +172,33 @@ export function registerPullRequestTools(server: McpServer): void {
       const ctx = resolveContext(workspace, repo_slug);
       const statuses = await fetchBuildStatuses(ctx.workspace, ctx.repoSlug, pull_request_id);
       return { content: [{ type: "text" as const, text: JSON.stringify(statuses, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    "getPullRequestDiffstat",
+    "Per-file change summary for a pull request: status, path, lines added and removed. Answers 'how big is it' and 'what does it touch' without the diff itself.",
+    {
+      workspace: z.string().optional(),
+      repo_slug: z.string().optional(),
+      pull_request_id: z.number().describe("Pull request ID"),
+      verbose: z.boolean().optional().describe("Return the raw API objects instead of the compact records"),
+    },
+    async ({ workspace, repo_slug, pull_request_id, verbose }) => {
+      const ctx = resolveContext(workspace, repo_slug);
+      const result = await bitbucketAllPages<RawDiffstatEntry>(
+        `/repositories/${ctx.workspace}/${ctx.repoSlug}/pullrequests/${pull_request_id}/diffstat`,
+        new URLSearchParams(),
+        DIFFSTAT_LIMIT,
+      );
+
+      if (verbose) {
+        return { content: [{ type: "text" as const, text: JSON.stringify(result.values, null, 2) }] };
+      }
+
+      const entries = result.values.map(compactDiffstatEntry);
+      const text = `${summarizeDiffstat(entries, result.truncated)}\n${JSON.stringify(entries, null, 2)}`;
+      return { content: [{ type: "text" as const, text }] };
     },
   );
 
