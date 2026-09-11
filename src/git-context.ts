@@ -35,6 +35,19 @@ function parseRemoteUrl(url: string): GitContext | null {
   return null;
 }
 
+export function resolveWorkspace(explicitWorkspace?: string): string {
+  if (explicitWorkspace) return explicitWorkspace;
+
+  const detected = detectGitContext();
+  if (!detected) {
+    throw new Error(
+      "Could not detect workspace from git remote. " +
+      "Pass workspace explicitly, or run from a directory with a Bitbucket remote.",
+    );
+  }
+  return detected.workspace;
+}
+
 export function resolveContext(
   explicitWorkspace?: string,
   explicitRepoSlug?: string,

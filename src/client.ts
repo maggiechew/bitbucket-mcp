@@ -14,6 +14,12 @@ export interface PaginatedResponse<T> {
   values: T[];
 }
 
+export interface AllPagesResult<T> {
+  values: T[];
+  total?: number;
+  truncated: boolean;
+}
+
 function getAuth(): BitbucketAuth {
   const email = process.env.BITBUCKET_EMAIL;
   const apiToken = process.env.BITBUCKET_API_TOKEN;
@@ -30,6 +36,10 @@ function getAuth(): BitbucketAuth {
 function authHeader(): string {
   const { email, apiToken } = getAuth();
   return "Basic " + Buffer.from(`${email}:${apiToken}`).toString("base64");
+}
+
+function resolveUrl(pathOrUrl: string): string {
+  return pathOrUrl.startsWith("http") ? pathOrUrl : `${BASE_URL}${pathOrUrl}`;
 }
 
 export async function bitbucketRequest<T>(
@@ -51,7 +61,7 @@ export async function bitbucketRequest<T>(
     headers["Content-Type"] = "application/json";
   }
 
-  const response = await fetch(`${BASE_URL}${path}`, {
+  const response = await fetch(resolveUrl(path), {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
@@ -66,7 +76,8 @@ export async function bitbucketRequest<T>(
     return (await response.text()) as T;
   }
 
-  return (await response.json()) as T;
+  const text = await response.text();
+  return (text ? JSON.parse(text) : undefined) as T;
 }
 
 export async function bitbucketPaginated<T>(
@@ -81,4 +92,27 @@ export async function bitbucketPaginated<T>(
   const fullPath = query ? `${path}?${query}` : path;
 
   return bitbucketRequest<PaginatedResponse<T>>(fullPath);
+}
+
+export async function bitbucketAllPages<T>(
+  path: string,
+  params: URLSearchParams,
+  limit: number,
+): Promise<AllPagesResult<T>> {
+  const pageParams = new URLSearchParams(params);
+  pageParams.set("pagelen", String(Math.min(limit, 50)));
+
+  let nextUrl: string | undefined = `${path}?${pageParams.toString()}`;
+  const values: T[] = [];
+  let total: number | undefined;
+
+  while (nextUrl && values.length < limit) {
+    const page: PaginatedResponse<T> = await bitbucketRequest<PaginatedResponse<T>>(nextUrl);
+    total = page.size ?? total;
+    values.push(...page.values);
+    nextUrl = page.next;
+  }
+
+  const truncated = values.length > limit || Boolean(nextUrl);
+  return { values: values.slice(0, limit), total, truncated };
 }

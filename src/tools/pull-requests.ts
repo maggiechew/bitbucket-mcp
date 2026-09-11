@@ -1,36 +1,166 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { bitbucketRequest, bitbucketPaginated } from "../client.js";
-import { resolveContext } from "../git-context.js";
+import { bitbucketRequest, bitbucketPaginated, bitbucketAllPages } from "../client.js";
+import { resolveContext, resolveWorkspace } from "../git-context.js";
+import { resolveAuthorUuid } from "../users.js";
+import {
+  CompactPullRequest,
+  RawPullRequest,
+  compactPullRequest,
+  repoSlugFromFullName,
+  summarizeList,
+} from "../pull-request-format.js";
+import { enrichAll, EnrichedPullRequest, fetchBuildStatuses, summarizeReview } from "../pull-request-enrich.js";
+
+const PR_STATES = ["OPEN", "MERGED", "DECLINED", "SUPERSEDED"] as const;
+const MAX_LIMIT = 100;
+const DEFAULT_LIMIT = 25;
+const DEFAULT_UPDATED_WITHIN_DAYS = 30;
+const AUTO_DETAIL_THRESHOLD = 20;
+
+const listSchema = {
+  states: z.array(z.enum(PR_STATES)).optional().describe("PR states to include (default: [OPEN])"),
+  title_contains: z.string().optional().describe("Only PRs whose title contains this text (case-insensitive)"),
+  updated_within_days: z.number().optional().describe(`Only PRs updated in the last N days (default ${DEFAULT_UPDATED_WITHIN_DAYS}; pass 0 for no cutoff)`),
+  limit: z.number().optional().describe(`Maximum PRs to return across pages (default ${DEFAULT_LIMIT}, max ${MAX_LIMIT})`),
+  include_details: z.boolean().optional().describe(`Attach latest build status and review/approval summary to each PR (default: on when ${AUTO_DETAIL_THRESHOLD} or fewer PRs are returned)`),
+  verbose: z.boolean().optional().describe("Return the raw API objects instead of the compact summary"),
+};
+
+function stateClause(states: readonly string[]): string {
+  const clauses = states.map((s) => `state="${s}"`);
+  return clauses.length === 1 ? clauses[0] : `(${clauses.join(" OR ")})`;
+}
+
+function titleClause(text: string | undefined): string | undefined {
+  if (!text) return undefined;
+  return `title ~ "${text.replace(/"/g, '\\"')}"`;
+}
+
+function updatedSinceClause(days: number | undefined): string | undefined {
+  const window = days ?? DEFAULT_UPDATED_WITHIN_DAYS;
+  if (window <= 0) return undefined;
+  const since = new Date(Date.now() - window * 24 * 60 * 60 * 1000);
+  return `updated_on >= ${since.toISOString().replace(/\.\d{3}Z$/, "Z")}`;
+}
+
+async function respond(
+  workspace: string,
+  fallbackRepoSlug: string,
+  result: { values: unknown[]; total?: number; truncated: boolean },
+  options: { include_details?: boolean; verbose?: boolean },
+) {
+  if (options.verbose) {
+    const text = `${summarizeList(result.values.length, result.total, result.truncated, false)}\n${JSON.stringify(result.values, null, 2)}`;
+    return { content: [{ type: "text" as const, text }] };
+  }
+
+  const compact = (result.values as RawPullRequest[]).map(compactPullRequest);
+  const withDetails = options.include_details ?? compact.length <= AUTO_DETAIL_THRESHOLD;
+  const items: CompactPullRequest[] = withDetails
+    ? await enrichAll(workspace, compact, (pr) => repoSlugFromFullName(pr.repo, fallbackRepoSlug))
+    : compact;
+
+  const text = `${summarizeList(items.length, result.total, result.truncated, withDetails)}\n${JSON.stringify(items, null, 2)}`;
+  return { content: [{ type: "text" as const, text }] };
+}
 
 export function registerPullRequestTools(server: McpServer): void {
   server.tool(
     "listPullRequests",
-    "List pull requests in a repository, filtered by state",
+    "List pull requests in a repository as compact records, each with latest build status and review state. Filter by author or reviewer ('me', a name fragment, or a uuid), by states, and by recency. Fetches every page up to limit.",
     {
       workspace: z.string().optional().describe("Bitbucket workspace (auto-detected from git remote if omitted)"),
       repo_slug: z.string().optional().describe("Repository slug (auto-detected from git remote if omitted)"),
-      state: z.enum(["OPEN", "MERGED", "DECLINED", "SUPERSEDED"]).optional().describe("Filter by PR state (default: OPEN)"),
-      page: z.number().optional().describe("Page number"),
-      pagelen: z.number().optional().describe("Results per page (max 50)"),
+      author: z.string().optional().describe("Only PRs by this author: 'me', a name fragment (must match exactly one workspace member), or a uuid"),
+      reviewer: z.string().optional().describe("Only PRs where this user is a reviewer: 'me', a name fragment, or a uuid. Check review.pending to see whether they still need to act."),
+      sort: z.string().optional().describe("Sort field, prefix '-' for descending (default: -updated_on)"),
+      ...listSchema,
     },
-    async ({ workspace, repo_slug, state, page, pagelen }) => {
+    async ({ workspace, repo_slug, author, reviewer, sort, states, title_contains, updated_within_days, limit, include_details, verbose }) => {
       const ctx = resolveContext(workspace, repo_slug);
-      const params = new URLSearchParams();
-      if (state) params.set("state", state);
-      if (page) params.set("page", String(page));
-      if (pagelen) params.set("pagelen", String(pagelen));
+      const clauses = [stateClause(states?.length ? states : ["OPEN"])];
+      if (author) clauses.push(`author.uuid="${await resolveAuthorUuid(ctx.workspace, author)}"`);
+      if (reviewer) clauses.push(`reviewers.uuid="${await resolveAuthorUuid(ctx.workspace, reviewer)}"`);
+      const title = titleClause(title_contains);
+      if (title) clauses.push(title);
+      const since = updatedSinceClause(updated_within_days);
+      if (since) clauses.push(since);
 
-      const query = params.toString();
-      const path = `/repositories/${ctx.workspace}/${ctx.repoSlug}/pullrequests${query ? `?${query}` : ""}`;
-      const result = await bitbucketRequest(path);
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+      const params = new URLSearchParams();
+      params.set("q", clauses.join(" AND "));
+      params.set("sort", sort ?? "-updated_on");
+
+      const result = await bitbucketAllPages(
+        `/repositories/${ctx.workspace}/${ctx.repoSlug}/pullrequests`,
+        params,
+        Math.min(limit ?? DEFAULT_LIMIT, MAX_LIMIT),
+      );
+      return respond(ctx.workspace, ctx.repoSlug, result, { include_details, verbose });
+    },
+  );
+
+  server.tool(
+    "listMyPullRequests",
+    "List pull requests authored by the authenticated user across every repository in the workspace, as compact records with latest build status and review state.",
+    {
+      workspace: z.string().optional().describe("Bitbucket workspace (auto-detected from git remote if omitted)"),
+      ...listSchema,
+    },
+    async ({ workspace, states, title_contains, updated_within_days, limit, include_details, verbose }) => {
+      const ws = resolveWorkspace(workspace);
+      const uuid = await resolveAuthorUuid(ws, "me");
+
+      const clauses = [stateClause(states?.length ? states : ["OPEN"])];
+      const title = titleClause(title_contains);
+      if (title) clauses.push(title);
+      const since = updatedSinceClause(updated_within_days);
+      if (since) clauses.push(since);
+
+      const params = new URLSearchParams();
+      params.set("q", clauses.join(" AND "));
+      params.set("sort", "-updated_on");
+
+      const result = await bitbucketAllPages(
+        `/workspaces/${ws}/pullrequests/${encodeURIComponent(uuid)}`,
+        params,
+        Math.min(limit ?? DEFAULT_LIMIT, MAX_LIMIT),
+      );
+      return respond(ws, "", result, { include_details, verbose });
     },
   );
 
   server.tool(
     "getPullRequest",
-    "Get details of a specific pull request",
+    "One pull request as a compact record: metadata, description, latest build status, reviewers and review state.",
+    {
+      workspace: z.string().optional(),
+      repo_slug: z.string().optional(),
+      pull_request_id: z.number().describe("Pull request ID"),
+      verbose: z.boolean().optional().describe("Return the raw API object instead of the compact record"),
+    },
+    async ({ workspace, repo_slug, pull_request_id, verbose }) => {
+      const ctx = resolveContext(workspace, repo_slug);
+      const [pr, statuses] = await Promise.all([
+        bitbucketRequest<RawPullRequest>(`/repositories/${ctx.workspace}/${ctx.repoSlug}/pullrequests/${pull_request_id}`),
+        fetchBuildStatuses(ctx.workspace, ctx.repoSlug, pull_request_id),
+      ]);
+
+      const enriched: EnrichedPullRequest & { description?: string } = {
+        ...compactPullRequest(pr),
+        description: pr.description ?? pr.summary?.raw,
+        build: statuses.length ? { ...statuses[0], total_statuses: statuses.length } : undefined,
+        review: summarizeReview(pr),
+      };
+
+      const payload = verbose ? pr : enriched;
+      return { content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    "getPullRequestBuildStatuses",
+    "List every build status reported on a pull request, newest first. Use when more than one build has run on the PR.",
     {
       workspace: z.string().optional(),
       repo_slug: z.string().optional(),
@@ -38,10 +168,8 @@ export function registerPullRequestTools(server: McpServer): void {
     },
     async ({ workspace, repo_slug, pull_request_id }) => {
       const ctx = resolveContext(workspace, repo_slug);
-      const result = await bitbucketRequest(
-        `/repositories/${ctx.workspace}/${ctx.repoSlug}/pullrequests/${pull_request_id}`,
-      );
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+      const statuses = await fetchBuildStatuses(ctx.workspace, ctx.repoSlug, pull_request_id);
+      return { content: [{ type: "text" as const, text: JSON.stringify(statuses, null, 2) }] };
     },
   );
 

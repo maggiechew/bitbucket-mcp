@@ -1,26 +1,32 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { bitbucketRequest, bitbucketPaginated } from "../client.js";
+import { bitbucketRequest, bitbucketAllPages } from "../client.js";
 import { resolveContext } from "../git-context.js";
+import { RawComment, compactComments } from "../comment-format.js";
+
+const MAX_COMMENTS = 200;
 
 export function registerCommentTools(server: McpServer): void {
   server.tool(
     "getPullRequestComments",
-    "List all comments on a pull request",
+    "Every non-deleted comment on a pull request in chronological order, as compact records (author, local timestamp, body, inline file/line, reply_to).",
     {
       workspace: z.string().optional(),
       repo_slug: z.string().optional(),
       pull_request_id: z.number().describe("Pull request ID"),
-      page: z.number().optional(),
-      pagelen: z.number().optional(),
+      limit: z.number().optional().describe(`Maximum comments to return across pages (default ${MAX_COMMENTS})`),
+      verbose: z.boolean().optional().describe("Return the raw API objects instead of the compact records"),
     },
-    async ({ workspace, repo_slug, pull_request_id, page, pagelen }) => {
+    async ({ workspace, repo_slug, pull_request_id, limit, verbose }) => {
       const ctx = resolveContext(workspace, repo_slug);
-      const result = await bitbucketPaginated(
+      const result = await bitbucketAllPages<RawComment>(
         `/repositories/${ctx.workspace}/${ctx.repoSlug}/pullrequests/${pull_request_id}/comments`,
-        { page, pagelen },
+        new URLSearchParams(),
+        limit ?? MAX_COMMENTS,
       );
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+      const payload = verbose ? result.values : compactComments(result.values);
+      const note = result.truncated ? "(more available; raise limit)\n" : "";
+      return { content: [{ type: "text" as const, text: `${note}${JSON.stringify(payload, null, 2)}` }] };
     },
   );
 
@@ -79,6 +85,44 @@ export function registerCommentTools(server: McpServer): void {
         { method: "PUT", body: { content: { raw: content } } },
       );
       return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    "resolvePullRequestComment",
+    "Mark a pull request comment thread as resolved",
+    {
+      workspace: z.string().optional(),
+      repo_slug: z.string().optional(),
+      pull_request_id: z.number().describe("Pull request ID"),
+      comment_id: z.number().describe("Comment ID"),
+    },
+    async ({ workspace, repo_slug, pull_request_id, comment_id }) => {
+      const ctx = resolveContext(workspace, repo_slug);
+      const result = await bitbucketRequest(
+        `/repositories/${ctx.workspace}/${ctx.repoSlug}/pullrequests/${pull_request_id}/comments/${comment_id}/resolve`,
+        { method: "POST" },
+      );
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    "reopenPullRequestComment",
+    "Reopen a resolved pull request comment thread",
+    {
+      workspace: z.string().optional(),
+      repo_slug: z.string().optional(),
+      pull_request_id: z.number().describe("Pull request ID"),
+      comment_id: z.number().describe("Comment ID"),
+    },
+    async ({ workspace, repo_slug, pull_request_id, comment_id }) => {
+      const ctx = resolveContext(workspace, repo_slug);
+      await bitbucketRequest(
+        `/repositories/${ctx.workspace}/${ctx.repoSlug}/pullrequests/${pull_request_id}/comments/${comment_id}/resolve`,
+        { method: "DELETE" },
+      );
+      return { content: [{ type: "text" as const, text: "Comment thread reopened." }] };
     },
   );
 
