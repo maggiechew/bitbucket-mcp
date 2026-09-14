@@ -18,13 +18,16 @@ import {
 import { BuildOutcome, classifyFailure, classifyOutcome } from "./build-classification.js";
 import { TestAlignment, alignTest } from "./test-alignment.js";
 import { StatusIncident, bitbucketIncidentsBetween } from "./bitbucket-status.js";
-import { jenkinsHealth, jenkinsNotAcceptingBuilds } from "./ci-health.js";
+import { toLocalTime } from "./pull-request-format.js";
+import { BuildExecution, buildExecution, jenkinsHealth, jenkinsNotAcceptingBuilds } from "./ci-health.js";
 
 export interface BuildReport {
   pull_request_id: number;
+  checked_at_local: string;
   build: JenkinsBuild;
   outcome: BuildOutcome;
   last_completed_build?: number;
+  execution?: BuildExecution;
   classification?: string;
   died_in: string | null;
   stages: Omit<StageCascade, "died_in">;
@@ -51,12 +54,13 @@ export async function buildReport(
   buildNumber: number | undefined,
 ): Promise<BuildReport> {
   const build = await locateBuild(workspace, repoSlug, pullRequestId, buildNumber);
-  const [stages, tests, consoleText, changes, lastCompleted] = await Promise.all([
+  const [stages, tests, consoleText, changes, lastCompleted, execution] = await Promise.all([
     fetchStages(build.job, build.number),
     fetchTestReport(build.job, build.number),
     fetchConsole(build.job, build.number),
     fetchPullRequestChanges(workspace, repoSlug, pullRequestId),
     build.building ? fetchLastCompletedBuildNumber(build.job) : null,
+    build.building ? buildExecution(build.job, build.number) : undefined,
   ]);
 
   const cascade = stageCascade(stages, consoleText);
@@ -66,9 +70,11 @@ export async function buildReport(
 
   return {
     pull_request_id: pullRequestId,
+    checked_at_local: toLocalTime(new Date().toISOString())!,
     build,
     outcome,
     last_completed_build: lastCompleted ?? undefined,
+    execution,
     classification: outcome === "failed" ? classifyFailure(errors, cascade) : undefined,
     died_in: cascade.died_in,
     stages: { failed: cascade.failed, aborted: cascade.aborted, skipped: cascade.skipped },
