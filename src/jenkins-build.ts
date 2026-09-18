@@ -90,9 +90,24 @@ export function pullRequestJob(folder: string, pullRequestId: number): string {
   return `/job/${encodeURIComponent(folder)}/job/PR-${pullRequestId}`;
 }
 
+/** The Jenkins job path for a name like `my-job` or a nested `folder/branch`. */
+export function jobPath(name: string): string {
+  return name
+    .split("/")
+    .filter(Boolean)
+    .map((segment) => `/job/${encodeURIComponent(segment)}`)
+    .join("");
+}
+
 export async function fetchBuild(job: string, number: number | "lastBuild"): Promise<JenkinsBuild | null> {
   const raw = await jenkinsJson<RawBuild>(`${job}/${number}/api/json?tree=${BUILD_FIELDS}`);
   return raw ? compactBuild(job, raw) : null;
+}
+
+/** The job's most recent builds, newest first, or null when Jenkins has no such job. */
+export async function fetchRecentBuilds(job: string, limit: number): Promise<JenkinsBuild[] | null> {
+  const listing = await jenkinsJson<{ builds?: RawBuild[] }>(`${job}/api/json?tree=builds[${BUILD_FIELDS}]{0,${limit}}`);
+  return listing ? (listing.builds ?? []).map((raw) => compactBuild(job, raw)) : null;
 }
 
 function compactBuild(job: string, raw: RawBuild): JenkinsBuild {

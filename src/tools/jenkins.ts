@@ -2,10 +2,16 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { resolveContext } from "../git-context.js";
 import { buildReport, retriggerBuild } from "../build-report.js";
+import { diagnoseBuild } from "../build-diagnosis.js";
+import { fetchBuild, fetchRecentBuilds, jobPath } from "../jenkins-build.js";
 import { discoverPipeline } from "../jenkins-discovery.js";
 
 const DEFAULT_SAMPLE_SIZE = 20;
 const MAX_SAMPLE_SIZE = 50;
+const DEFAULT_LIST_LIMIT = 20;
+const MAX_LIST_LIMIT = 100;
+
+const JOB_DESCRIPTION = "Jenkins job name as it appears in the URL, e.g. `my-app-master`, or a nested path like `my-app/master` for a branch job inside a multibranch folder";
 
 export function registerJenkinsTools(server: McpServer): void {
   server.tool(
@@ -21,6 +27,36 @@ export function registerJenkinsTools(server: McpServer): void {
       const ctx = resolveContext(workspace, repo_slug);
       const report = await buildReport(ctx.workspace, ctx.repoSlug, pull_request_id, build_number);
       return { content: [{ type: "text" as const, text: JSON.stringify(report, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    "getJenkinsBuildReport",
+    "Explain one build of any Jenkins job by name, for builds that belong to no pull request such as a master branch or nightly job: outcome (passed, in_progress, aborted, tests_failed, failed), when it started in local time, the stage it died in, which stages were aborted or skipped as a consequence, the failing tests with file, example, error line and how many consecutive builds each has failed, and the console lines that name a non-test failure. Defaults to the job's latest build; an in_progress report carries execution and last_completed_build, so call again with that build_number when asked about a finished run. Carries no pull request alignment: to tell whether a failure is new, fetch the earlier build too and compare the two reports.",
+    {
+      job: z.string().describe(JOB_DESCRIPTION),
+      build_number: z.number().optional().describe("A specific build of the job (default: the latest build)"),
+    },
+    async ({ job, build_number }) => {
+      const path = jobPath(job);
+      const build = await fetchBuild(path, build_number ?? "lastBuild");
+      if (!build) throw new Error(`Jenkins has no build ${build_number ?? "lastBuild"} for ${job}.`);
+      const report = await diagnoseBuild(build);
+      return { content: [{ type: "text" as const, text: JSON.stringify(report, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    "listJenkinsBuilds",
+    "The most recent builds of a Jenkins job by name, newest first: number, result (SUCCESS, UNSTABLE, FAILURE, ABORTED, or null while building), started_local, duration and URL. Use it to find the build that ran on a given night or date before calling getJenkinsBuildReport with its build_number; a job that also builds on merges through the day has several builds per date, so pick by start time.",
+    {
+      job: z.string().describe(JOB_DESCRIPTION),
+      limit: z.number().optional().describe(`Builds to return (default ${DEFAULT_LIST_LIMIT}, max ${MAX_LIST_LIMIT})`),
+    },
+    async ({ job, limit }) => {
+      const builds = await fetchRecentBuilds(jobPath(job), Math.min(limit ?? DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT));
+      if (!builds) throw new Error(`Jenkins has no job named "${job}".`);
+      return { content: [{ type: "text" as const, text: JSON.stringify(builds, null, 2) }] };
     },
   );
 
