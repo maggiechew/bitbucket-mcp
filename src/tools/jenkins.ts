@@ -78,15 +78,15 @@ export function registerJenkinsTools(server: McpServer): void {
 
   server.tool(
     "discoverJenkinsPipeline",
-    "Sample the most recent completed builds in a Jenkins multibranch folder and describe how its pipeline behaves: stage names and which run in parallel, how often a test report is published, outcome counts, and the failure signatures seen with example console lines. Use it to build or refresh a local manifest of this Jenkins setup, especially after a build that did not fit the manifest.",
+    "Sample recent completed builds and describe how a pipeline behaves: stage names and which run in parallel, how often a test report is published, outcome counts, and the failure signatures seen with example console lines. Given a multibranch folder it samples the latest completed build of each branch job; given a standalone job such as a master or nightly job it samples that job's last few builds. Use it to build or refresh a local manifest of this Jenkins setup, especially after a build that did not fit the manifest.",
     {
       repo_slug: z.string().optional(),
-      job_folder: z.string().optional().describe("Multibranch folder name (default: the repository slug)"),
-      sample_size: z.number().optional().describe(`Builds to sample, one per job, newest first (default ${DEFAULT_SAMPLE_SIZE}, max ${MAX_SAMPLE_SIZE})`),
+      job: z.string().optional().describe("Multibranch folder or standalone job name (default: the repository slug)"),
+      sample_size: z.number().optional().describe(`Builds to sample, newest first (default ${DEFAULT_SAMPLE_SIZE}, max ${MAX_SAMPLE_SIZE})`),
     },
-    async ({ repo_slug, job_folder, sample_size }) => {
-      const folder = job_folder ?? resolveContext(undefined, repo_slug).repoSlug;
-      const profile = await discoverPipeline(folder, Math.min(sample_size ?? DEFAULT_SAMPLE_SIZE, MAX_SAMPLE_SIZE));
+    async ({ repo_slug, job, sample_size }) => {
+      const target = job ?? resolveContext(undefined, repo_slug).repoSlug;
+      const profile = await discoverPipeline(target, Math.min(sample_size ?? DEFAULT_SAMPLE_SIZE, MAX_SAMPLE_SIZE));
       return { content: [{ type: "text" as const, text: JSON.stringify(profile, null, 2) }] };
     },
   );

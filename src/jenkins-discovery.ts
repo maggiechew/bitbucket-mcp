@@ -7,6 +7,7 @@ import {
   fetchConsole,
   fetchStages,
   fetchTestReport,
+  jobPath,
   stageCascade,
 } from "./jenkins-build.js";
 import { classifyFailure, classifyOutcome } from "./build-classification.js";
@@ -25,7 +26,8 @@ export interface SignatureProfile {
 }
 
 export interface PipelineProfile {
-  folder: string;
+  job: string;
+  kind: "multibranch_folder" | "job";
   jobs_sampled: string[];
   builds_sampled: number;
   outcomes: Record<string, number>;
@@ -34,8 +36,17 @@ export interface PipelineProfile {
   failure_signatures: SignatureProfile[];
 }
 
-interface RawFolder {
+// A multibranch folder lists jobs; a standalone job lists builds. Jenkins answers with whichever
+// fields the item has, so one request tells the two apart.
+interface RawJobOrFolder {
   jobs?: { name: string; lastCompletedBuild?: { number: number } | null }[];
+  builds?: { number: number; result: string | null }[];
+}
+
+interface SampleTarget {
+  name: string;
+  path: string;
+  number: number;
 }
 
 interface SampledBuild {
@@ -51,15 +62,26 @@ interface SampledBuild {
 
 const SIGNATURE_EXAMPLE_LIMIT = 3;
 
-/** Samples the most recently completed builds of a multibranch folder and describes how its pipeline behaves. */
-export async function discoverPipeline(folder: string, sampleSize: number): Promise<PipelineProfile> {
-  const jobs = await recentJobs(folder, sampleSize);
-  const samples = await Promise.all(jobs.map((job) => sampleBuild(job.path, job.number)));
+/**
+ * Samples recent completed builds and describes how the pipeline behaves: one build per branch job
+ * for a multibranch folder, or the last few builds of a standalone job such as a master branch.
+ */
+export async function discoverPipeline(job: string, sampleSize: number): Promise<PipelineProfile> {
+  const path = jobPath(job);
+  const listing = await jenkinsJson<RawJobOrFolder>(
+    `${path}/api/json?tree=jobs[name,lastCompletedBuild[number]],builds[number,result]{0,${sampleSize}}`,
+  );
+  if (!listing) throw new Error(`Jenkins has no job or folder named "${job}".`);
+
+  const kind = listing.jobs ? "multibranch_folder" : "job";
+  const targets = listing.jobs ? recentJobs(path, listing.jobs, sampleSize) : recentBuilds(job, path, listing.builds ?? []);
+  const samples = await Promise.all(targets.map((target) => sampleBuild(target.path, target.number)));
   const sampled = samples.filter((sample): sample is SampledBuild => sample !== null);
 
   return {
-    folder,
-    jobs_sampled: jobs.map((job) => job.name),
+    job,
+    kind,
+    jobs_sampled: [...new Set(targets.map((target) => target.name))],
     builds_sampled: sampled.length,
     outcomes: countBy(sampled, (sample) => sample.outcome),
     stages: stageProfiles(sampled),
@@ -72,21 +94,20 @@ export async function discoverPipeline(folder: string, sampleSize: number): Prom
   };
 }
 
-async function recentJobs(folder: string, limit: number): Promise<{ name: string; path: string; number: number }[]> {
-  const listing = await jenkinsJson<RawFolder>(
-    `/job/${encodeURIComponent(folder)}/api/json?tree=jobs[name,lastCompletedBuild[number]]`,
-  );
-  if (!listing) throw new Error(`Jenkins has no job folder named "${folder}".`);
-
-  return (listing.jobs ?? [])
+function recentJobs(folderPath: string, jobs: NonNullable<RawJobOrFolder["jobs"]>, limit: number): SampleTarget[] {
+  return jobs
     .filter((job) => job.lastCompletedBuild)
     .map((job) => ({
       name: job.name,
-      path: `/job/${encodeURIComponent(folder)}/job/${encodeURIComponent(job.name)}`,
+      path: `${folderPath}/job/${encodeURIComponent(job.name)}`,
       number: job.lastCompletedBuild!.number,
     }))
     .sort((a, b) => b.number - a.number)
     .slice(0, limit);
+}
+
+function recentBuilds(name: string, path: string, builds: NonNullable<RawJobOrFolder["builds"]>): SampleTarget[] {
+  return builds.filter((build) => build.result !== null).map((build) => ({ name, path, number: build.number }));
 }
 
 async function sampleBuild(job: string, number: number): Promise<SampledBuild | null> {
