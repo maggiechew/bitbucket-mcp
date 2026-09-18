@@ -13,6 +13,7 @@ import { BuildOutcome, classifyFailure, classifyOutcome } from "./build-classifi
 import { StatusIncident, bitbucketIncidentsBetween } from "./bitbucket-status.js";
 import { toLocalTime } from "./pull-request-format.js";
 import { BuildExecution, buildExecution } from "./ci-health.js";
+import { FailedStepReport, failedStepReport } from "./step-log.js";
 
 export interface BuildDiagnosis {
   checked_at_local: string;
@@ -23,6 +24,7 @@ export interface BuildDiagnosis {
   classification?: string;
   died_in: string | null;
   stages: Omit<StageCascade, "died_in">;
+  failed_step?: FailedStepReport;
   tests: { passed: number; skipped: number; failed: FailedTest[] } | null;
   console_errors: string[];
   console_url: string;
@@ -45,7 +47,11 @@ export async function diagnoseBuild(build: JenkinsBuild): Promise<BuildDiagnosis
   const cascade = stageCascade(stages, consoleText);
   const errors = consoleErrors(consoleText);
   const outcome = classifyOutcome(build, tests);
-  const incidents = outcome === "failed" ? await bitbucketIncidentsBetween(buildStart(build), buildEnd(build)) : undefined;
+  const diedIn = stages.find((stage) => stage.name === cascade.died_in);
+  const [incidents, failedStep] = await Promise.all([
+    outcome === "failed" ? bitbucketIncidentsBetween(buildStart(build), buildEnd(build)) : undefined,
+    diedIn ? failedStepReport(build.job, build.number, diedIn) : undefined,
+  ]);
 
   return {
     checked_at_local: toLocalTime(new Date().toISOString())!,
@@ -56,6 +62,7 @@ export async function diagnoseBuild(build: JenkinsBuild): Promise<BuildDiagnosis
     classification: outcome === "failed" ? classifyFailure(errors, cascade) : undefined,
     died_in: cascade.died_in,
     stages: { failed: cascade.failed, aborted: cascade.aborted, skipped: cascade.skipped },
+    failed_step: failedStep ?? undefined,
     tests,
     console_errors: errors,
     console_url: `${build.url}console`,

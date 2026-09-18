@@ -14,10 +14,23 @@ export interface JenkinsBuild {
 }
 
 export interface JenkinsStage {
+  id: string;
   name: string;
   status: string;
   started_ms: number;
   duration_ms: number;
+}
+
+export interface JenkinsStep {
+  id: string;
+  name: string;
+  status: string;
+  command?: string;
+}
+
+export interface StepLog {
+  text: string;
+  truncated: boolean;
 }
 
 export interface FailedTest {
@@ -51,10 +64,23 @@ interface RawBuild {
 }
 
 interface RawStage {
+  id: string;
   name: string;
   status: string;
   startTimeMillis: number;
   durationMillis: number;
+}
+
+interface RawFlowNode {
+  id: string;
+  name: string;
+  status: string;
+  parameterDescription?: string;
+}
+
+interface RawNodeLog {
+  text?: string;
+  hasMore?: boolean;
 }
 
 interface RawTestCase {
@@ -135,11 +161,38 @@ export async function fetchLastCompletedBuildNumber(job: string): Promise<number
 export async function fetchStages(job: string, number: number): Promise<JenkinsStage[]> {
   const described = await jenkinsJson<{ stages?: RawStage[] }>(`${job}/${number}/wfapi/describe`);
   return (described?.stages ?? []).map((stage) => ({
+    id: stage.id,
     name: stage.name,
     status: stage.status,
     started_ms: stage.startTimeMillis,
     duration_ms: stage.durationMillis,
   }));
+}
+
+/** The steps that ran inside one stage, in order, each with the command it ran when it was a shell step. */
+export async function fetchStageSteps(job: string, number: number, stageId: string): Promise<JenkinsStep[]> {
+  const described = await jenkinsJson<{ stageFlowNodes?: RawFlowNode[] }>(
+    `${job}/${number}/execution/node/${stageId}/wfapi/describe`,
+  );
+  return (described?.stageFlowNodes ?? []).map((node) => ({
+    id: node.id,
+    name: node.name,
+    status: node.status,
+    command: node.parameterDescription || undefined,
+  }));
+}
+
+/**
+ * One step's own output. The workflow API trims long logs, so when it reports more the plain-text
+ * endpoint is read instead; if that is unavailable too the trimmed text is returned and flagged.
+ */
+export async function fetchStepLog(job: string, number: number, stepId: string): Promise<StepLog | null> {
+  const log = await jenkinsJson<RawNodeLog>(`${job}/${number}/execution/node/${stepId}/wfapi/log`);
+  if (!log) return null;
+  if (!log.hasMore) return { text: log.text ?? "", truncated: false };
+
+  const full = await jenkinsText(`${job}/${number}/execution/node/${stepId}/log/progressiveText?start=0`);
+  return full !== null ? { text: full, truncated: false } : { text: log.text ?? "", truncated: true };
 }
 
 /** The build's JUnit report with only its failing cases, or null when no report was published. */
