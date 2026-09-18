@@ -132,7 +132,9 @@ export async function fetchBuild(job: string, number: number | "lastBuild"): Pro
 
 /** The job's most recent builds, newest first, or null when Jenkins has no such job. */
 export async function fetchRecentBuilds(job: string, limit: number): Promise<JenkinsBuild[] | null> {
-  const listing = await jenkinsJson<{ builds?: RawBuild[] }>(`${job}/api/json?tree=builds[${BUILD_FIELDS}]{0,${limit}}`);
+  const listing = await jenkinsJson<{ builds?: RawBuild[] }>(
+    `${job}/api/json?tree=builds[${BUILD_FIELDS}]{0,${limit}}`,
+  );
   return listing ? (listing.builds ?? []).map((raw) => compactBuild(job, raw)) : null;
 }
 

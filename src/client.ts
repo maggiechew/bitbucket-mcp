@@ -26,9 +26,7 @@ function getAuth(): BitbucketAuth {
   const apiToken = process.env.BITBUCKET_API_TOKEN;
 
   if (!email || !apiToken) {
-    throw new Error(
-      "BITBUCKET_EMAIL and BITBUCKET_API_TOKEN environment variables are required",
-    );
+    throw new Error("BITBUCKET_EMAIL and BITBUCKET_API_TOKEN environment variables are required");
   }
 
   return { email, apiToken };
@@ -54,8 +52,8 @@ export async function bitbucketRequest<T>(
   const { method = "GET", body, accept = "application/json" } = options;
 
   const headers: Record<string, string> = {
-    "Authorization": authHeader(),
-    "Accept": accept,
+    Authorization: authHeader(),
+    Accept: accept,
   };
 
   if (body) {

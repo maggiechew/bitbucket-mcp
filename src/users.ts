@@ -95,7 +95,9 @@ async function resolveOne(user: string, members: BitbucketUser[]): Promise<strin
   if (matches.length === 0) throw new Error(`No workspace member matches "${user}". Use findUsers to see candidates.`);
 
   const names = matches.map((u) => `${u.display_name} (${u.uuid})`).join(", ");
-  throw new Error(`"${user}" matches ${matches.length} workspace members: ${names}. Pass a uuid or a more specific name.`);
+  throw new Error(
+    `"${user}" matches ${matches.length} workspace members: ${names}. Pass a uuid or a more specific name.`,
+  );
 }
 
 // Ordered from the strongest reading of a name to the weakest: the whole name, one whole word

@@ -74,7 +74,9 @@ export async function discoverPipeline(job: string, sampleSize: number): Promise
   if (!listing) throw new Error(`Jenkins has no job or folder named "${job}".`);
 
   const kind = listing.jobs ? "multibranch_folder" : "job";
-  const targets = listing.jobs ? recentJobs(path, listing.jobs, sampleSize) : recentBuilds(job, path, listing.builds ?? []);
+  const targets = listing.jobs
+    ? recentJobs(path, listing.jobs, sampleSize)
+    : recentBuilds(job, path, listing.builds ?? []);
   const samples = await Promise.all(targets.map((target) => sampleBuild(target.path, target.number)));
   const sampled = samples.filter((sample): sample is SampledBuild => sample !== null);
 

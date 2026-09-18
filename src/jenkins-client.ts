@@ -22,7 +22,9 @@ function getAuth(): JenkinsAuth {
   const apiToken = process.env.JENKINS_API_TOKEN;
 
   if (!baseUrl || !user || !apiToken) {
-    throw new Error("JENKINS_URL and JENKINS_API_TOKEN environment variables are required (JENKINS_USER defaults to BITBUCKET_EMAIL)");
+    throw new Error(
+      "JENKINS_URL and JENKINS_API_TOKEN environment variables are required (JENKINS_USER defaults to BITBUCKET_EMAIL)",
+    );
   }
 
   return { baseUrl: baseUrl.replace(/\/+$/, ""), user, apiToken };

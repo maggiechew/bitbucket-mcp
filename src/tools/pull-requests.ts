@@ -23,9 +23,20 @@ const DIFFSTAT_LIMIT = 500;
 const listSchema = {
   states: z.array(z.enum(PR_STATES)).optional().describe("PR states to include (default: [OPEN])"),
   title_contains: z.string().optional().describe("Only PRs whose title contains this text (case-insensitive)"),
-  updated_within_days: z.number().optional().describe(`Only PRs updated in the last N days (default ${DEFAULT_UPDATED_WITHIN_DAYS}; pass 0 for no cutoff)`),
-  limit: z.number().optional().describe(`Maximum PRs to return across pages (default ${DEFAULT_LIMIT}, max ${MAX_LIMIT})`),
-  include_details: z.boolean().optional().describe(`Attach latest build status and review/approval summary to each PR (default: on when ${AUTO_DETAIL_THRESHOLD} or fewer PRs are returned)`),
+  updated_within_days: z
+    .number()
+    .optional()
+    .describe(`Only PRs updated in the last N days (default ${DEFAULT_UPDATED_WITHIN_DAYS}; pass 0 for no cutoff)`),
+  limit: z
+    .number()
+    .optional()
+    .describe(`Maximum PRs to return across pages (default ${DEFAULT_LIMIT}, max ${MAX_LIMIT})`),
+  include_details: z
+    .boolean()
+    .optional()
+    .describe(
+      `Attach latest build status and review/approval summary to each PR (default: on when ${AUTO_DETAIL_THRESHOLD} or fewer PRs are returned)`,
+    ),
   verbose: z.boolean().optional().describe("Return the raw API objects instead of the compact summary"),
 };
 
@@ -108,12 +119,32 @@ export function registerPullRequestTools(server: McpServer): void {
     {
       workspace: z.string().optional().describe("Bitbucket workspace (auto-detected from git remote if omitted)"),
       repo_slug: z.string().optional().describe("Repository slug (auto-detected from git remote if omitted)"),
-      author: users.optional().describe("Only PRs by this author, or any of these authors: 'me', a name as the user said it, or a uuid. Names resolve exactly as findUsers does; no lookup needed first"),
-      reviewer: users.optional().describe("Only PRs where this user, or any of these users, is a reviewer: 'me', a name fragment, or a uuid. Check review.pending to see whether they still need to act."),
+      author: users
+        .optional()
+        .describe(
+          "Only PRs by this author, or any of these authors: 'me', a name as the user said it, or a uuid. Names resolve exactly as findUsers does; no lookup needed first",
+        ),
+      reviewer: users
+        .optional()
+        .describe(
+          "Only PRs where this user, or any of these users, is a reviewer: 'me', a name fragment, or a uuid. Check review.pending to see whether they still need to act.",
+        ),
       sort: z.string().optional().describe("Sort field, prefix '-' for descending (default: -updated_on)"),
       ...listSchema,
     },
-    async ({ workspace, repo_slug, author, reviewer, sort, states, title_contains, updated_within_days, limit, include_details, verbose }) => {
+    async ({
+      workspace,
+      repo_slug,
+      author,
+      reviewer,
+      sort,
+      states,
+      title_contains,
+      updated_within_days,
+      limit,
+      include_details,
+      verbose,
+    }) => {
       const ctx = resolveContext(workspace, repo_slug);
       const clauses = [stateClause(states?.length ? states : ["OPEN"])];
       if (author) clauses.push(await userClause("author.uuid", ctx.workspace, author));
@@ -178,7 +209,9 @@ export function registerPullRequestTools(server: McpServer): void {
     async ({ workspace, repo_slug, pull_request_id, verbose }) => {
       const ctx = resolveContext(workspace, repo_slug);
       const [pr, statuses] = await Promise.all([
-        bitbucketRequest<RawPullRequest>(`/repositories/${ctx.workspace}/${ctx.repoSlug}/pullrequests/${pull_request_id}`),
+        bitbucketRequest<RawPullRequest>(
+          `/repositories/${ctx.workspace}/${ctx.repoSlug}/pullrequests/${pull_request_id}`,
+        ),
         fetchBuildStatuses(ctx.workspace, ctx.repoSlug, pull_request_id),
       ]);
 
@@ -246,10 +279,24 @@ export function registerPullRequestTools(server: McpServer): void {
       source_branch: z.string().describe("Source branch name"),
       destination_branch: z.string().optional().describe("Destination branch (default: repo main branch)"),
       description: z.string().optional().describe("PR description (markdown)"),
-      reviewers: z.array(z.string()).optional().describe("Reviewers as names or uuids. Names resolve exactly as findUsers does, so pass them as the user said them; a genuine tie fails with the candidates listed"),
+      reviewers: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Reviewers as names or uuids. Names resolve exactly as findUsers does, so pass them as the user said them; a genuine tie fails with the candidates listed",
+        ),
       close_source_branch: z.boolean().optional().describe("Close source branch on merge"),
     },
-    async ({ workspace, repo_slug, title, source_branch, destination_branch, description, reviewers, close_source_branch }) => {
+    async ({
+      workspace,
+      repo_slug,
+      title,
+      source_branch,
+      destination_branch,
+      description,
+      reviewers,
+      close_source_branch,
+    }) => {
       const ctx = resolveContext(workspace, repo_slug);
       const body: Record<string, unknown> = {
         title,
@@ -264,10 +311,10 @@ export function registerPullRequestTools(server: McpServer): void {
         body.reviewers = reviewerBodies(await resolveUserUuids(ctx.workspace, reviewers));
       }
 
-      const result = await bitbucketRequest(
-        `/repositories/${ctx.workspace}/${ctx.repoSlug}/pullrequests`,
-        { method: "POST", body },
-      );
+      const result = await bitbucketRequest(`/repositories/${ctx.workspace}/${ctx.repoSlug}/pullrequests`, {
+        method: "POST",
+        body,
+      });
       return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
     },
   );
@@ -282,11 +329,30 @@ export function registerPullRequestTools(server: McpServer): void {
       title: z.string().optional().describe("New title"),
       description: z.string().optional().describe("New description (markdown)"),
       destination_branch: z.string().optional().describe("New destination branch"),
-      reviewers: z.array(z.string()).optional().describe("Replace the reviewer list with these people (names or uuids; no lookup needed first)"),
-      add_reviewers: z.array(z.string()).optional().describe("Add these people to the current reviewers (names or uuids; no lookup needed first)"),
-      remove_reviewers: z.array(z.string()).optional().describe("Remove these people from the current reviewers (names or uuids; no lookup needed first)"),
+      reviewers: z
+        .array(z.string())
+        .optional()
+        .describe("Replace the reviewer list with these people (names or uuids; no lookup needed first)"),
+      add_reviewers: z
+        .array(z.string())
+        .optional()
+        .describe("Add these people to the current reviewers (names or uuids; no lookup needed first)"),
+      remove_reviewers: z
+        .array(z.string())
+        .optional()
+        .describe("Remove these people from the current reviewers (names or uuids; no lookup needed first)"),
     },
-    async ({ workspace, repo_slug, pull_request_id, title, description, destination_branch, reviewers, add_reviewers, remove_reviewers }) => {
+    async ({
+      workspace,
+      repo_slug,
+      pull_request_id,
+      title,
+      description,
+      destination_branch,
+      reviewers,
+      add_reviewers,
+      remove_reviewers,
+    }) => {
       const ctx = resolveContext(workspace, repo_slug);
       const body: Record<string, unknown> = {};
       if (title) body.title = title;
@@ -294,7 +360,15 @@ export function registerPullRequestTools(server: McpServer): void {
       if (destination_branch) body.destination = { branch: { name: destination_branch } };
       if (reviewers) body.reviewers = reviewerBodies(await resolveUserUuids(ctx.workspace, reviewers));
       if (add_reviewers?.length || remove_reviewers?.length) {
-        body.reviewers = reviewerBodies(await adjustedReviewers(ctx.workspace, ctx.repoSlug, pull_request_id, add_reviewers ?? [], remove_reviewers ?? []));
+        body.reviewers = reviewerBodies(
+          await adjustedReviewers(
+            ctx.workspace,
+            ctx.repoSlug,
+            pull_request_id,
+            add_reviewers ?? [],
+            remove_reviewers ?? [],
+          ),
+        );
       }
 
       const result = await bitbucketRequest(
@@ -346,10 +420,10 @@ export function registerPullRequestTools(server: McpServer): void {
       if (destination_branch) body.destination = { branch: { name: destination_branch } };
       if (description) body.description = description;
 
-      const result = await bitbucketRequest(
-        `/repositories/${ctx.workspace}/${ctx.repoSlug}/pullrequests`,
-        { method: "POST", body },
-      );
+      const result = await bitbucketRequest(`/repositories/${ctx.workspace}/${ctx.repoSlug}/pullrequests`, {
+        method: "POST",
+        body,
+      });
       return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
     },
   );

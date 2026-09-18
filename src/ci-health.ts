@@ -52,8 +52,7 @@ export interface CiHealth {
 }
 
 export type BuildExecution =
-  | { state: "running" }
-  | { state: "waiting_for_agent"; reason: string; waiting_minutes: number };
+  { state: "running" } | { state: "waiting_for_agent"; reason: string; waiting_minutes: number };
 
 interface RawRoot {
   quietingDown: boolean;
@@ -107,11 +106,13 @@ export async function ciHealth(): Promise<CiHealth> {
 /** Why Jenkins would not run a build queued now, or null when it would. */
 export function jenkinsNotAcceptingBuilds(health: JenkinsHealth): string | null {
   if (!health.reachable) return health.error ?? "Jenkins is unreachable.";
-  if (health.quieting_down) return "Jenkins is quieting down for a restart and holds new builds in the queue until it comes back.";
+  if (health.quieting_down)
+    return "Jenkins is quieting down for a restart and holds new builds in the queue until it comes back.";
   if (health.labels_without_nodes?.length) {
     return `No online node serves the label(s) ${health.labels_without_nodes.join(", ")}; queued builds are stuck until agents come back.`;
   }
-  if (health.nodes && !health.nodes.some((node) => node.online && node.executors.total > 0)) return "Jenkins has no online agents to run a build.";
+  if (health.nodes && !health.nodes.some((node) => node.online && node.executors.total > 0))
+    return "Jenkins has no online agents to run a build.";
   return null;
 }
 
@@ -119,7 +120,9 @@ export function jenkinsNotAcceptingBuilds(health: JenkinsHealth): string | null 
 export async function buildExecution(job: string, number: number): Promise<BuildExecution> {
   const queue = await jenkinsJson<RawQueue>("/queue/api/json?tree=items[inQueueSince,why,stuck,task[name,url]]");
   const item = (queue?.items ?? []).map(compactQueueItem).find((entry) => belongsTo(entry, job, number));
-  return item ? { state: "waiting_for_agent", reason: item.reason, waiting_minutes: item.waiting_minutes } : { state: "running" };
+  return item
+    ? { state: "waiting_for_agent", reason: item.reason, waiting_minutes: item.waiting_minutes }
+    : { state: "running" };
 }
 
 export async function jenkinsHealth(): Promise<JenkinsHealth> {
@@ -127,7 +130,9 @@ export async function jenkinsHealth(): Promise<JenkinsHealth> {
   try {
     const [root, computers, queue] = await Promise.all([
       jenkinsJson<RawRoot>("/api/json?tree=quietingDown"),
-      jenkinsJson<RawComputerSet>("/computer/api/json?tree=busyExecutors,totalExecutors,computer[displayName,offline,offlineCauseReason,numExecutors,executors[idle]]"),
+      jenkinsJson<RawComputerSet>(
+        "/computer/api/json?tree=busyExecutors,totalExecutors,computer[displayName,offline,offlineCauseReason,numExecutors,executors[idle]]",
+      ),
       jenkinsJson<RawQueue>("/queue/api/json?tree=items[inQueueSince,why,stuck,task[name,url]]"),
     ]);
     const items = (queue?.items ?? []).map(compactQueueItem).sort((a, b) => b.waiting_minutes - a.waiting_minutes);
@@ -147,7 +152,11 @@ export async function jenkinsHealth(): Promise<JenkinsHealth> {
 
 function assess(bitbucket: BitbucketStatus, jenkins: JenkinsHealth | undefined, checkedAt: string): HealthAssessment {
   const findings = [...bitbucketFindings(bitbucket), ...(jenkins ? jenkinsFindings(jenkins) : [])];
-  const status = findings.some((finding) => DOWN_CONDITIONS.has(finding.condition)) ? "down" : findings.length ? "degraded" : "ok";
+  const status = findings.some((finding) => DOWN_CONDITIONS.has(finding.condition))
+    ? "down"
+    : findings.length
+      ? "degraded"
+      : "ok";
   return { status, summary: `As of ${checkedAt}, ${summarize(status, bitbucket, jenkins, findings)}`, findings };
 }
 
@@ -155,17 +164,28 @@ const DOWN_CONDITIONS = new Set(["jenkins_unreachable", "no_nodes_for_label", "n
 
 function bitbucketFindings(bitbucket: BitbucketStatus): HealthFinding[] {
   if (bitbucket.indicator === "none") return [];
-  const incidents = bitbucket.open_incidents.map((incident) => `${incident.name} (${incident.impact}, ${incident.url})`).join("; ");
-  return [{
-    condition: "bitbucket_incident",
-    evidence: `${bitbucket.description}. ${incidents || bitbucket.degraded_components.map((c) => `${c.name}: ${c.status}`).join(", ")}`,
-    advice: "Pushes, PR statuses and API calls may fail or lag until Atlassian resolves it. Nothing on our side to fix; wait it out.",
-  }];
+  const incidents = bitbucket.open_incidents
+    .map((incident) => `${incident.name} (${incident.impact}, ${incident.url})`)
+    .join("; ");
+  return [
+    {
+      condition: "bitbucket_incident",
+      evidence: `${bitbucket.description}. ${incidents || bitbucket.degraded_components.map((c) => `${c.name}: ${c.status}`).join(", ")}`,
+      advice:
+        "Pushes, PR statuses and API calls may fail or lag until Atlassian resolves it. Nothing on our side to fix; wait it out.",
+    },
+  ];
 }
 
 function jenkinsFindings(jenkins: JenkinsHealth): HealthFinding[] {
   if (!jenkins.reachable) {
-    return [{ condition: "jenkins_unreachable", evidence: jenkins.error ?? "", advice: "Check the VPN first, then whether the Jenkins host is up. Nothing else can be read until it answers." }];
+    return [
+      {
+        condition: "jenkins_unreachable",
+        evidence: jenkins.error ?? "",
+        advice: "Check the VPN first, then whether the Jenkins host is up. Nothing else can be read until it answers.",
+      },
+    ];
   }
   const findings: HealthFinding[] = [];
   const queue = jenkins.queue!;
@@ -176,14 +196,16 @@ function jenkinsFindings(jenkins: JenkinsHealth): HealthFinding[] {
     findings.push({
       condition: "no_nodes_for_label",
       evidence: `No online node serves label ${jenkins.labels_without_nodes.join(", ")}; ${stuck.length} build(s) stuck in the queue, oldest ${formatWait(queue.oldest_wait_minutes ?? 0)}`,
-      advice: "Builds needing that label cannot start until agents come back. If the label is served by cloud workers, they are not being provisioned; that is an infrastructure problem, and retriggering will not help.",
+      advice:
+        "Builds needing that label cannot start until agents come back. If the label is served by cloud workers, they are not being provisioned; that is an infrastructure problem, and retriggering will not help.",
     });
   }
   if (jenkins.quieting_down) {
     findings.push({
       condition: "quieting_down",
       evidence: `Jenkins is quieting down; ${queue.depth} item(s) queued`,
-      advice: "A restart is pending. Builds queue until Jenkins is back; do not retrigger, and check again in a few minutes.",
+      advice:
+        "A restart is pending. Builds queue until Jenkins is back; do not retrigger, and check again in a few minutes.",
     });
   }
   const offline = nodes.filter((node) => !node.online);
@@ -196,28 +218,41 @@ function jenkinsFindings(jenkins: JenkinsHealth): HealthFinding[] {
   }
   const online = nodes.filter((node) => node.online && node.executors.total > 0);
   if (!jenkins.labels_without_nodes?.length && online.length === 0) {
-    findings.push({ condition: "no_agents", evidence: "No online node has an executor", advice: "Nothing can run. Agents need to come back before any build starts." });
+    findings.push({
+      condition: "no_agents",
+      evidence: "No online node has an executor",
+      advice: "Nothing can run. Agents need to come back before any build starts.",
+    });
   }
   const saturated = jenkins.executors!.total > 0 && jenkins.executors!.busy >= jenkins.executors!.total;
   if (!jenkins.labels_without_nodes?.length && saturated && queue.depth > 0) {
     findings.push({
       condition: "capacity",
       evidence: `${jenkins.executors!.busy}/${jenkins.executors!.total} executors busy, ${queue.depth} queued, oldest ${formatWait(queue.oldest_wait_minutes ?? 0)}`,
-      advice: "Capacity, not failure. Builds will start as executors free up; a long oldest wait means a backlog, not a broken build.",
+      advice:
+        "Capacity, not failure. Builds will start as executors free up; a long oldest wait means a backlog, not a broken build.",
     });
   }
   const unexplained = queue.items.filter((item) => item.waiting_minutes >= LONG_WAIT_MINUTES && !findings.length);
   if (unexplained.length) {
     findings.push({
       condition: "unrecognised",
-      evidence: unexplained.map((item) => `${item.task}: ${item.reason} (${formatWait(item.waiting_minutes)})`).join("; "),
-      advice: "Builds have waited a long time for a reason this check does not recognise. Read the reasons above; they are Jenkins's own words.",
+      evidence: unexplained
+        .map((item) => `${item.task}: ${item.reason} (${formatWait(item.waiting_minutes)})`)
+        .join("; "),
+      advice:
+        "Builds have waited a long time for a reason this check does not recognise. Read the reasons above; they are Jenkins's own words.",
     });
   }
   return findings;
 }
 
-function summarize(status: HealthStatus, bitbucket: BitbucketStatus, jenkins: JenkinsHealth | undefined, findings: HealthFinding[]): string {
+function summarize(
+  status: HealthStatus,
+  bitbucket: BitbucketStatus,
+  jenkins: JenkinsHealth | undefined,
+  findings: HealthFinding[],
+): string {
   if (status === "ok") {
     if (!jenkins) return `Bitbucket is ${bitbucket.description.toLowerCase()}.`;
     const executors = jenkins.executors!;
@@ -252,7 +287,9 @@ function compactNode(computer: RawComputer): JenkinsNode {
 }
 
 function labelsWithoutNodes(items: QueueItem[]): string[] {
-  const labels = items.map((item) => OFFLINE_LABEL.exec(item.reason)?.[1]).filter((label): label is string => Boolean(label));
+  const labels = items
+    .map((item) => OFFLINE_LABEL.exec(item.reason)?.[1])
+    .filter((label): label is string => Boolean(label));
   return [...new Set(labels)];
 }
 

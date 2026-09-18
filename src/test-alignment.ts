@@ -56,7 +56,10 @@ function isNeighbourOf(specPath: string, changedPath: string): boolean {
 }
 
 function domainOf(specPath: string): string | null {
-  const directories = specPath.split("/").slice(0, -1).filter((segment) => !SPEC_ROOTS.includes(segment));
+  const directories = specPath
+    .split("/")
+    .slice(0, -1)
+    .filter((segment) => !SPEC_ROOTS.includes(segment));
   if (directories.length < NEIGHBOURHOOD_DEPTH) return null;
   return directories.slice(-NEIGHBOURHOOD_DEPTH).join("/");
 }

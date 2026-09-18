@@ -11,7 +11,8 @@ const MAX_SAMPLE_SIZE = 50;
 const DEFAULT_LIST_LIMIT = 20;
 const MAX_LIST_LIMIT = 100;
 
-const JOB_DESCRIPTION = "Jenkins job name as it appears in the URL, e.g. `my-app-master`, or a nested path like `my-app/master` for a branch job inside a multibranch folder";
+const JOB_DESCRIPTION =
+  "Jenkins job name as it appears in the URL, e.g. `my-app-master`, or a nested path like `my-app/master` for a branch job inside a multibranch folder";
 
 export function registerJenkinsTools(server: McpServer): void {
   server.tool(
@@ -21,7 +22,10 @@ export function registerJenkinsTools(server: McpServer): void {
       workspace: z.string().optional(),
       repo_slug: z.string().optional(),
       pull_request_id: z.number().describe("Pull request ID"),
-      build_number: z.number().optional().describe("A specific build of the PR's job (default: the build in the PR's latest Bitbucket status)"),
+      build_number: z
+        .number()
+        .optional()
+        .describe("A specific build of the PR's job (default: the build in the PR's latest Bitbucket status)"),
     },
     async ({ workspace, repo_slug, pull_request_id, build_number }) => {
       const ctx = resolveContext(workspace, repo_slug);
@@ -82,7 +86,10 @@ export function registerJenkinsTools(server: McpServer): void {
     {
       repo_slug: z.string().optional(),
       job: z.string().optional().describe("Multibranch folder or standalone job name (default: the repository slug)"),
-      sample_size: z.number().optional().describe(`Builds to sample, newest first (default ${DEFAULT_SAMPLE_SIZE}, max ${MAX_SAMPLE_SIZE})`),
+      sample_size: z
+        .number()
+        .optional()
+        .describe(`Builds to sample, newest first (default ${DEFAULT_SAMPLE_SIZE}, max ${MAX_SAMPLE_SIZE})`),
     },
     async ({ repo_slug, job, sample_size }) => {
       const target = job ?? resolveContext(undefined, repo_slug).repoSlug;

@@ -42,7 +42,7 @@ export function resolveWorkspace(explicitWorkspace?: string): string {
   if (!detected) {
     throw new Error(
       "Could not detect workspace from git remote. " +
-      "Pass workspace explicitly, or run from a directory with a Bitbucket remote.",
+        "Pass workspace explicitly, or run from a directory with a Bitbucket remote.",
     );
   }
   return detected.workspace;
@@ -60,7 +60,7 @@ export function resolveContext(
   if (!detected) {
     throw new Error(
       "Could not detect workspace/repo from git remote. " +
-      "Pass workspace and repo_slug explicitly, or run from a directory with a Bitbucket remote.",
+        "Pass workspace and repo_slug explicitly, or run from a directory with a Bitbucket remote.",
     );
   }
 

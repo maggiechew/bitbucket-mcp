@@ -32,7 +32,11 @@ const RUBY_BACKTRACE = /^\s*(from )?\S+\.rb:\d+:in /;
  * The step a stage died in and the part of its log worth reading: an rspec or Jest failures block,
  * a Ruby exception with its backtrace, or the last lines when nothing recognisable is there.
  */
-export async function failedStepReport(job: string, number: number, stage: JenkinsStage): Promise<FailedStepReport | null> {
+export async function failedStepReport(
+  job: string,
+  number: number,
+  stage: JenkinsStage,
+): Promise<FailedStepReport | null> {
   const steps = await fetchStageSteps(job, number, stage.id);
   const step = pickFailedStep(steps);
   if (!step) return null;
