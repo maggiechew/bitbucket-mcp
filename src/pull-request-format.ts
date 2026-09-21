@@ -88,6 +88,8 @@ export function summarizeList(
   const parts = [`${count} pull request${count === 1 ? "" : "s"} returned`];
   if (total !== undefined) parts.push(`of ${total} matching`);
   if (truncated) parts.push("(more available; raise limit)");
-  parts.push(detailsFetched ? "with build and review details" : "without build/review details (pass include_details: true)");
+  parts.push(
+    detailsFetched ? "with build and review details" : "without build/review details (pass include_details: true)",
+  );
   return parts.join(" ");
 }

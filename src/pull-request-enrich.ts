@@ -49,9 +49,7 @@ export async function fetchBuildStatuses(
   const page = await bitbucketRequest<PaginatedResponse<RawCommitStatus>>(
     `/repositories/${workspace}/${repoSlug}/pullrequests/${pullRequestId}/statuses?pagelen=50`,
   );
-  return page.values
-    .map(compactBuildStatus)
-    .sort((a, b) => (b.updated_on ?? "").localeCompare(a.updated_on ?? ""));
+  return page.values.map(compactBuildStatus).sort((a, b) => (b.updated_on ?? "").localeCompare(a.updated_on ?? ""));
 }
 
 export function summarizeReview(pr: RawPullRequest): ReviewSummary {

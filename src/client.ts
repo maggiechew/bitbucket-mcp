@@ -1,3 +1,4 @@
+import { bitbucketStatusNote } from "./bitbucket-status.js";
 const BASE_URL = "https://api.bitbucket.org/2.0";
 
 interface BitbucketAuth {
@@ -25,9 +26,7 @@ function getAuth(): BitbucketAuth {
   const apiToken = process.env.BITBUCKET_API_TOKEN;
 
   if (!email || !apiToken) {
-    throw new Error(
-      "BITBUCKET_EMAIL and BITBUCKET_API_TOKEN environment variables are required",
-    );
+    throw new Error("BITBUCKET_EMAIL and BITBUCKET_API_TOKEN environment variables are required");
   }
 
   return { email, apiToken };
@@ -53,8 +52,8 @@ export async function bitbucketRequest<T>(
   const { method = "GET", body, accept = "application/json" } = options;
 
   const headers: Record<string, string> = {
-    "Authorization": authHeader(),
-    "Accept": accept,
+    Authorization: authHeader(),
+    Accept: accept,
   };
 
   if (body) {
@@ -69,7 +68,8 @@ export async function bitbucketRequest<T>(
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Bitbucket API ${method} ${path} returned ${response.status}: ${text}`);
+    const note = response.status >= 500 ? await bitbucketStatusNote() : null;
+    throw new Error(`Bitbucket API ${method} ${path} returned ${response.status}: ${text}${note ? ` ${note}` : ""}`);
   }
 
   if (accept === "text/plain") {
