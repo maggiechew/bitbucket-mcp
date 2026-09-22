@@ -21,7 +21,7 @@ By default only PRs updated in the last 30 days are returned. Pass `updated_with
 - **createPullRequest** — create a PR with title, description, reviewers (names or uuids)
 - **updatePullRequest** — edit title, description, destination branch, reviewers. `add_reviewers` and `remove_reviewers` adjust the current list in one call; `reviewers` replaces it. People are names or uuids
 - **getPullRequestCommits** — list commits on a PR
-- **createDraftPullRequest** — create a draft PR
+- **createDraftPullRequest** — create a draft PR with title, description, reviewers (names or uuids)
 - **publishDraftPullRequest** — mark a draft as ready for review
 - **convertToDraft** — convert an open PR back to draft
 

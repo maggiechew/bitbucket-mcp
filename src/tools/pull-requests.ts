@@ -409,8 +409,14 @@ export function registerPullRequestTools(server: McpServer): void {
       source_branch: z.string().describe("Source branch name"),
       destination_branch: z.string().optional().describe("Destination branch (default: repo main branch)"),
       description: z.string().optional().describe("PR description (markdown)"),
+      reviewers: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Reviewers as names or uuids. Names resolve exactly as findUsers does, so pass them as the user said them; a genuine tie fails with the candidates listed",
+        ),
     },
-    async ({ workspace, repo_slug, title, source_branch, destination_branch, description }) => {
+    async ({ workspace, repo_slug, title, source_branch, destination_branch, description, reviewers }) => {
       const ctx = resolveContext(workspace, repo_slug);
       const body: Record<string, unknown> = {
         title,
@@ -419,6 +425,9 @@ export function registerPullRequestTools(server: McpServer): void {
       };
       if (destination_branch) body.destination = { branch: { name: destination_branch } };
       if (description) body.description = description;
+      if (reviewers?.length) {
+        body.reviewers = reviewerBodies(await resolveUserUuids(ctx.workspace, reviewers));
+      }
 
       const result = await bitbucketRequest(`/repositories/${ctx.workspace}/${ctx.repoSlug}/pullrequests`, {
         method: "POST",
