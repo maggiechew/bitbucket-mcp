@@ -34,6 +34,26 @@ export function jenkinsBaseUrl(): string {
   return getAuth().baseUrl;
 }
 
+/**
+ * The Jenkins multibranch folder for a repository: its entry in JENKINS_JOBS (`slug=folder,...`)
+ * when one is listed, otherwise the slug itself.
+ * @param repoSlug the Bitbucket repository slug
+ * @return the folder name as it appears in Jenkins URLs
+ */
+export function jenkinsFolderFor(repoSlug: string): string {
+  return jenkinsFolderMap().get(repoSlug) ?? repoSlug;
+}
+
+function jenkinsFolderMap(): Map<string, string> {
+  const pairs = (process.env.JENKINS_JOBS ?? "")
+    .split(",")
+    .map((pair) => pair.trim())
+    .filter(Boolean)
+    .map((pair) => pair.split("=").map((part) => part.trim()))
+    .filter((parts): parts is [string, string] => parts.length === 2 && parts.every(Boolean));
+  return new Map(pairs);
+}
+
 function authHeader(auth: JenkinsAuth): string {
   return "Basic " + Buffer.from(`${auth.user}:${auth.apiToken}`).toString("base64");
 }

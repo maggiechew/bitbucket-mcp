@@ -1,7 +1,15 @@
 import { AlignmentBasis, CommitTouch, fetchPullRequestChanges } from "./pull-request-changes.js";
 import { fetchBuildStatuses } from "./pull-request-enrich.js";
-import { jenkinsBaseUrl, jenkinsPost } from "./jenkins-client.js";
-import { FailedTest, JenkinsBuild, fetchBuild, jobFromStatusUrl, pullRequestJob } from "./jenkins-build.js";
+import { jenkinsBaseUrl, jenkinsFolderFor, jenkinsPost } from "./jenkins-client.js";
+import {
+  FailedTest,
+  JenkinsBuild,
+  fetchBuild,
+  jobFromStatusUrl,
+  jobPath,
+  missingBuildMessage,
+  pullRequestJob,
+} from "./jenkins-build.js";
 import { BuildDiagnosis, diagnoseBuild } from "./build-diagnosis.js";
 import { TestAlignment, alignTest } from "./test-alignment.js";
 import { jenkinsHealth, jenkinsNotAcceptingBuilds } from "./ci-health.js";
@@ -19,15 +27,17 @@ export type FailedTestReport = FailedTest & TestAlignment & { changed_by: Commit
 
 /**
  * Explains one PR build: whether it passed, where it died, which tests failed and how close each
- * sits to the PR's own changes. Reads the Jenkins job from the PR's Bitbucket build status.
+ * sits to the PR's own changes. Reads the Jenkins job from the PR's Bitbucket build status unless
+ * a job name is given.
  */
 export async function buildReport(
   workspace: string,
   repoSlug: string,
   pullRequestId: number,
   buildNumber: number | undefined,
+  job: string | undefined,
 ): Promise<BuildReport> {
-  const build = await locateBuild(workspace, repoSlug, pullRequestId, buildNumber);
+  const build = await locateBuild(workspace, repoSlug, pullRequestId, buildNumber, job);
   const [diagnosis, changes] = await Promise.all([
     diagnoseBuild(build),
     fetchPullRequestChanges(workspace, repoSlug, pullRequestId),
@@ -69,11 +79,12 @@ export async function retriggerBuild(
   repoSlug: string,
   pullRequestId: number,
   force: boolean,
+  job: string | undefined,
 ): Promise<RetriggerResult> {
   const blocker = force ? null : jenkinsNotAcceptingBuilds(await jenkinsHealth());
   if (blocker) throw new Error(`Not retriggering: ${blocker} Pass force: true to queue it anyway.`);
 
-  const located = await locateJob(workspace, repoSlug, pullRequestId);
+  const located = await locateJob(workspace, repoSlug, pullRequestId, job);
   const queueUrl = await jenkinsPost(`${located.job}/build`);
   return {
     pull_request_id: pullRequestId,
@@ -84,16 +95,18 @@ export async function retriggerBuild(
   };
 }
 
-// The Bitbucket status URL names the Jenkins job whatever the folder is called; the PR-<id>
-// convention of a multibranch folder named after the repo is the fallback when no status exists.
+// A given job name wins. Otherwise the Bitbucket status URL names the Jenkins job whatever the
+// folder is called, and the PR-<id> job in the repo's folder is the fallback when no status exists.
 async function locateJob(
   workspace: string,
   repoSlug: string,
   pullRequestId: number,
+  job: string | undefined,
 ): Promise<{ job: string; number: number | null }> {
+  if (job) return { job: jobPath(job), number: null };
   const statuses = await fetchBuildStatuses(workspace, repoSlug, pullRequestId);
   const located = jobFromStatusUrl(statuses[0]?.url);
-  return located ?? { job: pullRequestJob(repoSlug, pullRequestId), number: null };
+  return located ?? { job: pullRequestJob(jenkinsFolderFor(repoSlug), pullRequestId), number: null };
 }
 
 async function locateBuild(
@@ -101,11 +114,14 @@ async function locateBuild(
   repoSlug: string,
   pullRequestId: number,
   buildNumber: number | undefined,
+  job: string | undefined,
 ): Promise<JenkinsBuild> {
-  const located = await locateJob(workspace, repoSlug, pullRequestId);
+  const located = await locateJob(workspace, repoSlug, pullRequestId, job);
   const number = buildNumber ?? located.number ?? "lastBuild";
 
   const build = await fetchBuild(located.job, number);
-  if (!build) throw new Error(`Jenkins has no build ${number} for ${located.job}.`);
+  if (!build) throw new Error(`${await missingBuildMessage(located.job, number)} ${JOB_HINT}`);
   return build;
 }
+
+const JOB_HINT = "If the Jenkins folder is not named after the repository, set JENKINS_JOBS (slug=folder) or pass job.";

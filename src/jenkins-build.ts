@@ -125,6 +125,18 @@ export function jobPath(name: string): string {
     .join("");
 }
 
+/**
+ * Explains a null from fetchBuild: the job path resolves to nothing, or the job exists without that build.
+ * @param job the Jenkins job path (`/job/folder/job/name`)
+ * @param number the build asked for
+ * @return a message naming which of the two it was
+ */
+export async function missingBuildMessage(job: string, number: number | "lastBuild"): Promise<string> {
+  const listing = await jenkinsJson<{ name?: string }>(`${job}/api/json?tree=name`);
+  if (!listing) return `Jenkins has no job at ${job}.`;
+  return `Jenkins job ${job} exists but has no build ${number}.`;
+}
+
 export async function fetchBuild(job: string, number: number | "lastBuild"): Promise<JenkinsBuild | null> {
   const raw = await jenkinsJson<RawBuild>(`${job}/${number}/api/json?tree=${BUILD_FIELDS}`);
   return raw ? compactBuild(job, raw) : null;

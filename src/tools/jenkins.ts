@@ -3,7 +3,8 @@ import { z } from "zod";
 import { resolveContext } from "../git-context.js";
 import { buildReport, retriggerBuild } from "../build-report.js";
 import { diagnoseBuild } from "../build-diagnosis.js";
-import { fetchBuild, fetchRecentBuilds, jobPath } from "../jenkins-build.js";
+import { fetchBuild, fetchRecentBuilds, jobPath, missingBuildMessage } from "../jenkins-build.js";
+import { jenkinsFolderFor } from "../jenkins-client.js";
 import { discoverPipeline } from "../jenkins-discovery.js";
 
 const DEFAULT_SAMPLE_SIZE = 20;
@@ -13,6 +14,8 @@ const MAX_LIST_LIMIT = 100;
 
 const JOB_DESCRIPTION =
   "Jenkins job name as it appears in the URL, e.g. `my-app-master`, or a nested path like `my-app/master` for a branch job inside a multibranch folder";
+const PR_JOB_DESCRIPTION =
+  "The PR's Jenkins job by name, e.g. `my-app/PR-42`, when the folder is not named after the repository and JENKINS_JOBS does not list it (default: the job in the PR's latest Bitbucket status, else `<folder>/PR-<id>`)";
 
 export function registerJenkinsTools(server: McpServer): void {
   server.tool(
@@ -26,10 +29,11 @@ export function registerJenkinsTools(server: McpServer): void {
         .number()
         .optional()
         .describe("A specific build of the PR's job (default: the build in the PR's latest Bitbucket status)"),
+      job: z.string().optional().describe(PR_JOB_DESCRIPTION),
     },
-    async ({ workspace, repo_slug, pull_request_id, build_number }) => {
+    async ({ workspace, repo_slug, pull_request_id, build_number, job }) => {
       const ctx = resolveContext(workspace, repo_slug);
-      const report = await buildReport(ctx.workspace, ctx.repoSlug, pull_request_id, build_number);
+      const report = await buildReport(ctx.workspace, ctx.repoSlug, pull_request_id, build_number, job);
       return { content: [{ type: "text" as const, text: JSON.stringify(report, null, 2) }] };
     },
   );
@@ -44,7 +48,7 @@ export function registerJenkinsTools(server: McpServer): void {
     async ({ job, build_number }) => {
       const path = jobPath(job);
       const build = await fetchBuild(path, build_number ?? "lastBuild");
-      if (!build) throw new Error(`Jenkins has no build ${build_number ?? "lastBuild"} for ${job}.`);
+      if (!build) throw new Error(await missingBuildMessage(path, build_number ?? "lastBuild"));
       const report = await diagnoseBuild(build);
       return { content: [{ type: "text" as const, text: JSON.stringify(report, null, 2) }] };
     },
@@ -72,10 +76,11 @@ export function registerJenkinsTools(server: McpServer): void {
       repo_slug: z.string().optional(),
       pull_request_id: z.number().describe("Pull request ID"),
       force: z.boolean().optional().describe("Queue the build even though Jenkins is not currently accepting builds"),
+      job: z.string().optional().describe(PR_JOB_DESCRIPTION),
     },
-    async ({ workspace, repo_slug, pull_request_id, force }) => {
+    async ({ workspace, repo_slug, pull_request_id, force, job }) => {
       const ctx = resolveContext(workspace, repo_slug);
-      const result = await retriggerBuild(ctx.workspace, ctx.repoSlug, pull_request_id, force ?? false);
+      const result = await retriggerBuild(ctx.workspace, ctx.repoSlug, pull_request_id, force ?? false, job);
       return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
     },
   );
@@ -85,14 +90,19 @@ export function registerJenkinsTools(server: McpServer): void {
     "Sample recent completed builds and describe how a pipeline behaves: stage names and which run in parallel, how often a test report is published, outcome counts, and the failure signatures seen with example console lines. Given a multibranch folder it samples the latest completed build of each branch job; given a standalone job such as a master or nightly job it samples that job's last few builds. Use it to build or refresh a local manifest of this Jenkins setup, especially after a build that did not fit the manifest.",
     {
       repo_slug: z.string().optional(),
-      job: z.string().optional().describe("Multibranch folder or standalone job name (default: the repository slug)"),
+      job: z
+        .string()
+        .optional()
+        .describe(
+          "Multibranch folder or standalone job name (default: the repository's folder per JENKINS_JOBS, else its slug)",
+        ),
       sample_size: z
         .number()
         .optional()
         .describe(`Builds to sample, newest first (default ${DEFAULT_SAMPLE_SIZE}, max ${MAX_SAMPLE_SIZE})`),
     },
     async ({ repo_slug, job, sample_size }) => {
-      const target = job ?? resolveContext(undefined, repo_slug).repoSlug;
+      const target = job ?? jenkinsFolderFor(resolveContext(undefined, repo_slug).repoSlug);
       const profile = await discoverPipeline(target, Math.min(sample_size ?? DEFAULT_SAMPLE_SIZE, MAX_SAMPLE_SIZE));
       return { content: [{ type: "text" as const, text: JSON.stringify(profile, null, 2) }] };
     },
