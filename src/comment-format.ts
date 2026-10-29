@@ -8,6 +8,7 @@ export interface RawComment {
   content?: { raw?: string };
   inline?: { path: string; to?: number; from?: number };
   parent?: { id: number };
+  resolution?: Record<string, unknown>;
 }
 
 export interface CompactComment {
@@ -17,6 +18,17 @@ export interface CompactComment {
   body: string;
   inline?: { path: string; line?: number };
   reply_to?: number;
+  resolved?: boolean;
+}
+
+/**
+ * Whether a thread root is resolved. Bitbucket marks a resolved root with a `resolution`
+ * object (usually empty) and omits the key on an open root; replies never carry it and
+ * take their root's state, so they get no value here.
+ */
+function resolvedState(comment: RawComment): boolean | undefined {
+  if (comment.parent) return undefined;
+  return comment.resolution !== undefined;
 }
 
 export function compactComments(comments: RawComment[]): CompactComment[] {
@@ -30,5 +42,6 @@ export function compactComments(comments: RawComment[]): CompactComment[] {
       body: c.content?.raw ?? "",
       inline: c.inline ? { path: c.inline.path, line: c.inline.to ?? c.inline.from } : undefined,
       reply_to: c.parent?.id,
+      resolved: resolvedState(c),
     }));
 }

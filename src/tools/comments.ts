@@ -9,7 +9,7 @@ const MAX_COMMENTS = 200;
 export function registerCommentTools(server: McpServer): void {
   server.tool(
     "getPullRequestComments",
-    "Every non-deleted comment on a pull request in chronological order, as compact records (author, local timestamp, body, inline file/line, reply_to).",
+    "Every non-deleted comment on a pull request in chronological order, as compact records (id, author, local timestamp, body, inline file/line, reply_to, and on thread roots `resolved`: true when the thread is marked resolved, false when open; replies omit it and take their root's state).",
     {
       workspace: z.string().optional(),
       repo_slug: z.string().optional(),
