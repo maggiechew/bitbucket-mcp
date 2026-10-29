@@ -19,6 +19,24 @@ only the ClamAV scan and the SimpleCov wrap-up.
   failing tests, the tail is noise around the test run; drop it or flag it so
   the caller leads with `tests.failed`.
 
+## getPullRequestComments: return comment IDs
+
+Return comment IDs in `getPullRequestComments` responses so callers can reply to
+specific threads without a second round-trip.
+
+## Commit build status write tool
+
+Add a tool to create/update a build status on a commit via
+`POST /2.0/repositories/{workspace}/{repo_slug}/commit/{node}/statuses/build`.
+Use case: mark a stale INPROGRESS status as FAILED when Jenkins fails to send
+its final notification.
+
+- New tool (`updateCommitBuildStatus` or similar) accepting commit hash, key,
+  state, url, and optional name/description
+- Expose the `key` field in `BuildStatus` / `RawCommitStatus` so callers can
+  discover the key Jenkins used from `getPullRequestBuildStatuses` before writing
+- Auth and context plumbing already handle POST/PUT; no infrastructure changes
+
 ## Not planned
 
 - Master alignment by changeSet, attributing failing tests to the commits merged
