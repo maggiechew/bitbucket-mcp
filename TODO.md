@@ -19,11 +19,6 @@ only the ClamAV scan and the SimpleCov wrap-up.
   failing tests, the tail is noise around the test run; drop it or flag it so
   the caller leads with `tests.failed`.
 
-## getPullRequestComments: return comment IDs
-
-Return comment IDs in `getPullRequestComments` responses so callers can reply to
-specific threads without a second round-trip.
-
 ## Commit build status write tool
 
 Add a tool to create/update a build status on a commit via
