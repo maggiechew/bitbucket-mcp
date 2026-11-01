@@ -3,6 +3,7 @@ import {
   JenkinsBuild,
   JenkinsStage,
   StageCascade,
+  TestReport,
   consoleErrors,
   fetchConsole,
   fetchConsoleTail,
@@ -17,7 +18,7 @@ import { BuildOutcome, classifyFailure, classifyOutcome } from "./build-classifi
 import { StatusIncident, bitbucketIncidentsBetween } from "./bitbucket-status.js";
 import { toLocalTime } from "./pull-request-format.js";
 import { BuildExecution, ExecutionOptions, buildExecution, tailLines } from "./build-execution.js";
-import { FailedStepReport, failedStepReport } from "./step-log.js";
+import { FailedStepDiagnosis, FailedStepReport, failedStepReport } from "./step-log.js";
 
 export interface AbortedReport {
   by: string | null;
@@ -53,7 +54,7 @@ const ABORTED_STEP_STATUSES = ["ABORTED", "FAILED"];
  *   growth against; checkLiveness: sample the console size again a minute later instead
  */
 export async function diagnoseBuild(build: JenkinsBuild, execution: ExecutionOptions = {}): Promise<BuildDiagnosis> {
-  const [stages, tests, consoleText, lastCompleted, liveExecution] = await Promise.all([
+  const [stages, junit, consoleText, lastCompleted, liveExecution] = await Promise.all([
     fetchStages(build.job, build.number),
     fetchTestReport(build.job, build.number),
     fetchConsole(build.job, build.number),
@@ -63,12 +64,12 @@ export async function diagnoseBuild(build: JenkinsBuild, execution: ExecutionOpt
 
   const cascade = stageCascade(stages, consoleText);
   const errors = consoleErrors(consoleText);
-  const outcome = classifyOutcome(build, tests);
   const diedIn = stages.find((stage) => stage.name === cascade.died_in);
-  const [incidents, failedStep] = await Promise.all([
-    outcome === "failed" ? bitbucketIncidentsBetween(buildStart(build), buildEnd(build)) : undefined,
-    diedIn ? failedStepReport(build.job, build.number, diedIn) : undefined,
-  ]);
+  const failedStep = diedIn ? await failedStepReport(build.job, build.number, diedIn) : null;
+  const tests = reportedTests(junit, failedStep);
+  const outcome = classifyOutcome(build, tests);
+  const incidents =
+    outcome === "failed" ? await bitbucketIncidentsBetween(buildStart(build), buildEnd(build)) : undefined;
   const aborted = outcome === "aborted" && !failedStep ? await abortedReport(build, stages) : undefined;
 
   return {
@@ -80,13 +81,27 @@ export async function diagnoseBuild(build: JenkinsBuild, execution: ExecutionOpt
     classification: outcome === "failed" ? classifyFailure(errors, cascade) : undefined,
     died_in: cascade.died_in,
     stages: { failed: cascade.failed, aborted: cascade.aborted, skipped: cascade.skipped },
-    failed_step: failedStep ?? undefined,
+    failed_step: failedStep ? withExcerptValue(failedStep.report, tests) : undefined,
     aborted,
     tests,
     console_errors: errors,
     console_url: `${build.url}console`,
     bitbucket_incidents: incidents,
   };
+}
+
+// The junit report is the record when it lists failures; when it lists none, or was never published
+// because rspec died before writing it, the failing step's own rspec output names them instead.
+function reportedTests(junit: TestReport | null, failedStep: FailedStepDiagnosis | null): TestReport | null {
+  const parsed = failedStep?.failed_tests ?? [];
+  if (junit?.failed.length || parsed.length === 0) return junit;
+  return { passed: junit?.passed ?? 0, skipped: junit?.skipped ?? 0, failed: parsed };
+}
+
+// A tail around a test run that named its failures is noise next to them.
+function withExcerptValue(report: FailedStepReport, tests: TestReport | null): FailedStepReport {
+  const lowValue = report.excerpt_kind === "tail" && Boolean(tests?.failed.length);
+  return lowValue ? { ...report, excerpt_low_value: true } : report;
 }
 
 // Who stopped the build, the first stage cut short, and the end of that stage's own output; when no

@@ -46,7 +46,12 @@ export interface FailedTest {
   file: string;
   example: string;
   error?: string;
-  failing_for_builds: number;
+  failing_for_builds?: number;
+}
+
+export interface JenkinsArtifact {
+  fileName: string;
+  relativePath: string;
 }
 
 export interface TestReport {
@@ -333,6 +338,19 @@ function firstLine(details: string | null | undefined): string | undefined {
 
 export async function fetchConsole(job: string, number: number): Promise<string> {
   return (await jenkinsText(`${job}/${number}/consoleText`)) ?? "";
+}
+
+/** The files the build archived, each with its name and its path under the build's artifact root. */
+export async function fetchArtifacts(job: string, number: number): Promise<JenkinsArtifact[]> {
+  const raw = await jenkinsJson<{ artifacts?: JenkinsArtifact[] }>(
+    `${job}/${number}/api/json?tree=artifacts[fileName,relativePath]`,
+  );
+  return raw?.artifacts ?? [];
+}
+
+/** The text of one archived file, or null when the build has no artifact at that path. */
+export async function fetchArtifact(job: string, number: number, relativePath: string): Promise<string | null> {
+  return jenkinsText(`${job}/${number}/artifact/${relativePath}`);
 }
 
 /** The console lines that name a failure, most recent last, capped so a noisy log stays readable. */
