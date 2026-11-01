@@ -11,6 +11,7 @@ import {
   pullRequestJob,
 } from "./jenkins-build.js";
 import { BuildDiagnosis, diagnoseBuild } from "./build-diagnosis.js";
+import { ExecutionOptions } from "./build-execution.js";
 import { TestAlignment, alignTest } from "./test-alignment.js";
 import { jenkinsHealth, jenkinsNotAcceptingBuilds } from "./ci-health.js";
 
@@ -28,7 +29,8 @@ export type FailedTestReport = FailedTest & TestAlignment & { changed_by: Commit
 /**
  * Explains one PR build: whether it passed, where it died, which tests failed and how close each
  * sits to the PR's own changes. Reads the Jenkins job from the PR's Bitbucket build status unless
- * a job name is given.
+ * a job name is given. `execution` carries the liveness options for a building build (an earlier
+ * console size, or a request to sample it again after a minute).
  */
 export async function buildReport(
   workspace: string,
@@ -36,10 +38,11 @@ export async function buildReport(
   pullRequestId: number,
   buildNumber: number | undefined,
   job: string | undefined,
+  execution: ExecutionOptions = {},
 ): Promise<BuildReport> {
   const build = await locateBuild(workspace, repoSlug, pullRequestId, buildNumber, job);
   const [diagnosis, changes] = await Promise.all([
-    diagnoseBuild(build),
+    diagnoseBuild(build, execution),
     fetchPullRequestChanges(workspace, repoSlug, pullRequestId),
   ]);
 

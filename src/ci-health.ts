@@ -1,21 +1,28 @@
-import { jenkinsBaseUrl, jenkinsConfigured, jenkinsJson } from "./jenkins-client.js";
+import { buildPathOf, jenkinsBaseUrl, jenkinsConfigured, jenkinsJson } from "./jenkins-client.js";
 import { BitbucketStatus, fetchBitbucketStatus } from "./bitbucket-status.js";
 import { toLocalTime } from "./pull-request-format.js";
+import { formatDuration, minutesSince } from "./duration-format.js";
 
 export interface QueueItem {
   task: string;
-  url?: string;
+  build: string | null;
+  queued_since_ms: number;
   queued_since_local: string;
   waiting_minutes: number;
   reason: string;
   stuck: boolean;
 }
 
+export interface ExecutorOccupant {
+  build: string | null;
+  stage: string | null;
+}
+
 export interface JenkinsNode {
   name: string;
   online: boolean;
   offline_reason?: string;
-  executors: { busy: number; total: number };
+  executors: { busy: number; total: number; current: ExecutorOccupant[] };
 }
 
 export interface JenkinsHealth {
@@ -51,11 +58,13 @@ export interface CiHealth {
   jenkins?: JenkinsHealth;
 }
 
-export type BuildExecution =
-  { state: "running" } | { state: "waiting_for_agent"; reason: string; waiting_minutes: number };
-
 interface RawRoot {
   quietingDown: boolean;
+}
+
+interface RawExecutable {
+  url?: string;
+  displayName?: string;
 }
 
 interface RawComputer {
@@ -63,7 +72,7 @@ interface RawComputer {
   offline: boolean;
   offlineCauseReason: string;
   numExecutors: number;
-  executors?: { idle: boolean }[];
+  executors?: { idle: boolean; currentExecutable?: RawExecutable | null }[];
 }
 
 interface RawComputerSet {
@@ -85,6 +94,10 @@ interface RawQueue {
 
 const OFFLINE_LABEL = /All nodes of label ‘([^’]+)’ are offline/;
 const LONG_WAIT_MINUTES = 30;
+const QUEUE_TREE = "/queue/api/json?tree=items[inQueueSince,why,stuck,task[name,url]]";
+const COMPUTER_TREE =
+  "/computer/api/json?tree=busyExecutors,totalExecutors,computer[displayName,offline,offlineCauseReason,numExecutors,executors[idle,currentExecutable[url,displayName]]]";
+const STAGE_SUFFIX = /\s\(([^()]*(?:\([^()]*\)[^()]*)*)\)$/;
 
 /** Bitbucket's status page plus, when Jenkins is configured, whether it is up and taking builds, with a verdict. */
 export async function ciHealth(): Promise<CiHealth> {
@@ -116,26 +129,43 @@ export function jenkinsNotAcceptingBuilds(health: JenkinsHealth): string | null 
   return null;
 }
 
-/** Whether a build Jenkins calls "building" is on an executor or still waiting in the queue for one. */
-export async function buildExecution(job: string, number: number): Promise<BuildExecution> {
-  const queue = await jenkinsJson<RawQueue>("/queue/api/json?tree=items[inQueueSince,why,stuck,task[name,url]]");
-  const item = (queue?.items ?? []).map(compactQueueItem).find((entry) => belongsTo(entry, job, number));
-  return item
-    ? { state: "waiting_for_agent", reason: item.reason, waiting_minutes: item.waiting_minutes }
-    : { state: "running" };
+/** Every item in the Jenkins queue; each is a pipeline node block waiting for an executor, `build` naming the run it belongs to. */
+export async function fetchQueueItems(): Promise<QueueItem[]> {
+  const queue = await jenkinsJson<RawQueue>(QUEUE_TREE);
+  return (queue?.items ?? []).map(compactQueueItem);
+}
+
+/** Every Jenkins node with what each of its executors is running. */
+export async function fetchNodes(): Promise<JenkinsNode[]> {
+  const computers = await jenkinsJson<RawComputerSet>(COMPUTER_TREE);
+  return (computers?.computer ?? []).map(compactNode);
+}
+
+/** The queue items that belong to one build. */
+export function queueItemsFor(items: QueueItem[], buildUrl: string): QueueItem[] {
+  const path = buildPathOf(buildUrl);
+  return items.filter((item) => item.build && buildPathOf(item.build) === path);
+}
+
+/** The agents a build holds right now, each with the stage or parallel branch running on it. */
+export function agentsHeldBy(nodes: JenkinsNode[], buildUrl: string): { node: string; stage: string | null }[] {
+  const path = buildPathOf(buildUrl);
+  return nodes.flatMap((node) =>
+    node.executors.current
+      .filter((occupant) => occupant.build && buildPathOf(occupant.build) === path)
+      .map((occupant) => ({ node: node.name, stage: occupant.stage })),
+  );
 }
 
 export async function jenkinsHealth(): Promise<JenkinsHealth> {
   const url = jenkinsBaseUrl();
   try {
-    const [root, computers, queue] = await Promise.all([
+    const [root, computers, items] = await Promise.all([
       jenkinsJson<RawRoot>("/api/json?tree=quietingDown"),
-      jenkinsJson<RawComputerSet>(
-        "/computer/api/json?tree=busyExecutors,totalExecutors,computer[displayName,offline,offlineCauseReason,numExecutors,executors[idle]]",
-      ),
-      jenkinsJson<RawQueue>("/queue/api/json?tree=items[inQueueSince,why,stuck,task[name,url]]"),
+      jenkinsJson<RawComputerSet>(COMPUTER_TREE),
+      fetchQueueItems(),
     ]);
-    const items = (queue?.items ?? []).map(compactQueueItem).sort((a, b) => b.waiting_minutes - a.waiting_minutes);
+    items.sort((a, b) => b.waiting_minutes - a.waiting_minutes);
     return {
       url,
       reachable: true,
@@ -244,7 +274,61 @@ function jenkinsFindings(jenkins: JenkinsHealth): HealthFinding[] {
         "Builds have waited a long time for a reason this check does not recognise. Read the reasons above; they are Jenkins's own words.",
     });
   }
+  const starved = buildsHoldingAgentsWhileWaiting(nodes, queue.items);
+  if (starved.length) {
+    const shown = starved.slice(0, STARVED_SHOWN);
+    const more = starved.length > shown.length ? `; and ${starved.length - shown.length} more` : "";
+    findings.push({
+      condition: "agents_held_while_waiting",
+      evidence: `${starved.length} build(s) hold agents while waiting ${formatWait(LONG_WAIT_MINUTES)} or longer for more: ${shown
+        .map(
+          (entry) =>
+            `${entry.build} holds ${entry.agents_held} agent(s) (${entry.stages.join(", ")}), ${entry.stages_waiting} stage(s) waiting ${formatWait(entry.waiting_minutes)}`,
+        )
+        .join("; ")}${more}`,
+      advice:
+        "Each build keeps its agents until every branch has run, so the branches queued here wait on agents other such builds hold. Whether a held agent is working or idle is in that build's report (execution.stages); the builds nearest to finishing free agents soonest, so cancelling one of them lengthens the wait for everyone.",
+    });
+  }
   return findings;
+}
+
+const STARVED_SHOWN = 5;
+
+interface StarvedBuild {
+  build: string;
+  agents_held: number;
+  stages: string[];
+  stages_waiting: number;
+  waiting_minutes: number;
+}
+
+// The starvation pattern: a build keeps an agent for one branch while its other branches queue for
+// agents that the other such builds are holding, so no one finishes.
+function buildsHoldingAgentsWhileWaiting(nodes: JenkinsNode[], items: QueueItem[]): StarvedBuild[] {
+  const held = new Map<string, { build: string; stages: string[] }>();
+  for (const node of nodes) {
+    for (const occupant of node.executors.current) {
+      if (!occupant.build) continue;
+      const path = buildPathOf(occupant.build);
+      const entry = held.get(path) ?? { build: occupant.build, stages: [] };
+      entry.stages.push(occupant.stage ?? "?");
+      held.set(path, entry);
+    }
+  }
+  return [...held.entries()]
+    .map(([path, entry]) => {
+      const waiting = items.filter((item) => item.build && buildPathOf(item.build) === path);
+      return {
+        build: entry.build,
+        agents_held: entry.stages.length,
+        stages: entry.stages,
+        stages_waiting: waiting.length,
+        waiting_minutes: Math.max(0, ...waiting.map((item) => item.waiting_minutes)),
+      };
+    })
+    .filter((entry) => entry.stages_waiting > 0 && entry.waiting_minutes >= LONG_WAIT_MINUTES)
+    .sort((a, b) => b.waiting_minutes - a.waiting_minutes);
 }
 
 function summarize(
@@ -268,22 +352,41 @@ function summarize(
 function compactQueueItem(item: RawQueueItem): QueueItem {
   return {
     task: item.task?.name ?? "unknown",
-    url: item.task?.url,
+    build: item.task?.url ? absoluteBuildUrl(item.task.url) : null,
+    queued_since_ms: item.inQueueSince,
     queued_since_local: toLocalTime(new Date(item.inQueueSince).toISOString())!,
-    waiting_minutes: Math.round((Date.now() - item.inQueueSince) / 60000),
+    waiting_minutes: minutesSince(item.inQueueSince),
     reason: item.why ?? "",
     stuck: item.stuck ?? false,
   };
 }
 
+function absoluteBuildUrl(url: string): string {
+  return url.startsWith("http") ? url : `${jenkinsBaseUrl()}/${buildPathOf(url)}`;
+}
+
 function compactNode(computer: RawComputer): JenkinsNode {
   const executors = computer.executors ?? [];
+  const busy = executors.filter((executor) => !executor.idle);
   return {
     name: computer.displayName,
     online: !computer.offline,
     offline_reason: computer.offline ? computer.offlineCauseReason : undefined,
-    executors: { busy: executors.filter((executor) => !executor.idle).length, total: computer.numExecutors },
+    executors: {
+      busy: busy.length,
+      total: computer.numExecutors,
+      current: busy.map((executor) => ({
+        build: executor.currentExecutable?.url ?? null,
+        stage: stageFromDisplayName(executor.currentExecutable?.displayName),
+      })),
+    },
   };
+}
+
+// An agent executor runs a node block whose display name is the build's plus the enclosing stage or
+// parallel branch in parentheses: "my-app-master #3319 (Tests)", "… #2 (Feature b1f1 (base DBs))".
+function stageFromDisplayName(displayName: string | undefined): string | null {
+  return displayName?.match(STAGE_SUFFIX)?.[1] ?? null;
 }
 
 function labelsWithoutNodes(items: QueueItem[]): string[] {
@@ -293,10 +396,6 @@ function labelsWithoutNodes(items: QueueItem[]): string[] {
   return [...new Set(labels)];
 }
 
-function belongsTo(item: QueueItem, job: string, number: number): boolean {
-  return Boolean(item.url?.includes(`${job.replace(/^\//, "")}/${number}/`));
-}
-
 function formatWait(minutes: number): string {
-  return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
+  return formatDuration(minutes * 60_000);
 }

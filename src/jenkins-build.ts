@@ -1,4 +1,4 @@
-import { jenkinsJson, jenkinsText } from "./jenkins-client.js";
+import { ProgressiveText, jenkinsJson, jenkinsLogSize, jenkinsLogTail, jenkinsText } from "./jenkins-client.js";
 import { toLocalTime } from "./pull-request-format.js";
 
 export interface JenkinsBuild {
@@ -9,8 +9,10 @@ export interface JenkinsBuild {
   started_at: string;
   started_local?: string;
   duration_seconds: number;
+  estimated_duration_ms: number | null;
   url: string;
   commit?: string;
+  interrupted_by?: string[];
 }
 
 export interface JenkinsStage {
@@ -21,10 +23,17 @@ export interface JenkinsStage {
   duration_ms: number;
 }
 
+export interface JenkinsRun {
+  started_ms: number;
+  stages: JenkinsStage[];
+}
+
 export interface JenkinsStep {
   id: string;
   name: string;
   status: string;
+  started_ms: number;
+  duration_ms: number;
   command?: string;
 }
 
@@ -59,8 +68,13 @@ interface RawBuild {
   building: boolean;
   timestamp: number;
   duration: number;
+  estimatedDuration?: number;
   url: string;
-  actions?: { lastBuiltRevision?: { SHA1?: string } }[];
+  actions?: {
+    _class?: string;
+    lastBuiltRevision?: { SHA1?: string };
+    causes?: { shortDescription?: string }[];
+  }[];
 }
 
 interface RawStage {
@@ -75,6 +89,8 @@ interface RawFlowNode {
   id: string;
   name: string;
   status: string;
+  startTimeMillis?: number;
+  durationMillis?: number;
   parameterDescription?: string;
 }
 
@@ -97,7 +113,9 @@ interface RawTestReport {
   suites?: { cases?: RawTestCase[] }[];
 }
 
-const BUILD_FIELDS = "number,result,building,timestamp,duration,url,actions[lastBuiltRevision[SHA1]]";
+const BUILD_FIELDS =
+  "number,result,building,timestamp,duration,estimatedDuration,url,actions[_class,lastBuiltRevision[SHA1],causes[shortDescription]]";
+const INTERRUPTED_ACTION = "jenkins.model.InterruptedBuildAction";
 const TEST_CASE_FIELDS = "className,name,status,age,errorDetails";
 const FAILED_CASE_STATUSES = ["FAILED", "REGRESSION"];
 const ERROR_DETAIL_LIMIT = 300;
@@ -159,9 +177,20 @@ function compactBuild(job: string, raw: RawBuild): JenkinsBuild {
     started_at: new Date(raw.timestamp).toISOString(),
     started_local: toLocalTime(new Date(raw.timestamp).toISOString()),
     duration_seconds: Math.round(raw.duration / 1000),
+    estimated_duration_ms: raw.estimatedDuration && raw.estimatedDuration > 0 ? raw.estimatedDuration : null,
     url: raw.url,
     commit: raw.actions?.map((action) => action.lastBuiltRevision?.SHA1).find(Boolean),
+    interrupted_by: interruptedBy(raw),
   };
+}
+
+function interruptedBy(raw: RawBuild): string[] | undefined {
+  const causes = (raw.actions ?? [])
+    .filter((action) => action._class === INTERRUPTED_ACTION)
+    .flatMap((action) => action.causes ?? [])
+    .map((cause) => cause.shortDescription)
+    .filter((description): description is string => Boolean(description));
+  return causes.length ? causes : undefined;
 }
 
 /** The number of the job's most recent finished build, or null when none has finished. */
@@ -173,14 +202,33 @@ export async function fetchLastCompletedBuildNumber(job: string): Promise<number
 }
 
 export async function fetchStages(job: string, number: number): Promise<JenkinsStage[]> {
-  const described = await jenkinsJson<{ stages?: RawStage[] }>(`${job}/${number}/wfapi/describe`);
-  return (described?.stages ?? []).map((stage) => ({
-    id: stage.id,
-    name: stage.name,
-    status: stage.status,
-    started_ms: stage.startTimeMillis,
-    duration_ms: stage.durationMillis,
-  }));
+  return (await fetchRun(job, number)).stages;
+}
+
+/**
+ * The workflow view of a build: when the pipeline started and every stage and parallel branch as a flat
+ * list. A live stage's status cannot be trusted: one that has started and has no finished child yet
+ * reads SUCCESS with a negative duration, so `stageUnfinished` is the test for "still going".
+ */
+export async function fetchRun(job: string, number: number): Promise<JenkinsRun> {
+  const described = await jenkinsJson<{ startTimeMillis?: number; stages?: RawStage[] }>(
+    `${job}/${number}/wfapi/describe`,
+  );
+  return {
+    started_ms: described?.startTimeMillis ?? 0,
+    stages: (described?.stages ?? []).map((stage) => ({
+      id: stage.id,
+      name: stage.name,
+      status: stage.status,
+      started_ms: stage.startTimeMillis,
+      duration_ms: stage.durationMillis,
+    })),
+  };
+}
+
+/** Whether a stage or step is still going: IN_PROGRESS, or a live one that Jenkins reports finished with a negative duration. */
+export function stageUnfinished(node: { status: string; duration_ms: number }): boolean {
+  return node.status === "IN_PROGRESS" || node.duration_ms < 0;
 }
 
 /** The steps that ran inside one stage, in order, each with the command it ran when it was a shell step. */
@@ -192,8 +240,43 @@ export async function fetchStageSteps(job: string, number: number, stageId: stri
     id: node.id,
     name: node.name,
     status: node.status,
+    started_ms: node.startTimeMillis ?? 0,
+    duration_ms: node.durationMillis ?? 0,
     command: node.parameterDescription || undefined,
   }));
+}
+
+function stepLogPath(job: string, number: number, stepId: string): string {
+  return `${job}/${number}/execution/node/${stepId}/log/logText/progressiveText`;
+}
+
+function consoleLogPath(job: string, number: number): string {
+  return `${job}/${number}/logText/progressiveText`;
+}
+
+/** The last `bytes` of one step's own log, plain text and free of annotations, or null when the step has no log. */
+export async function fetchStepLogTail(
+  job: string,
+  number: number,
+  stepId: string,
+  bytes: number,
+): Promise<ProgressiveText | null> {
+  return jenkinsLogTail(stepLogPath(job, number, stepId), bytes);
+}
+
+/** The last `bytes` of the build's console, ConsoleNote blobs stripped. */
+export async function fetchConsoleTail(job: string, number: number, bytes: number): Promise<ProgressiveText | null> {
+  return jenkinsLogTail(consoleLogPath(job, number), bytes);
+}
+
+/** The build console's current size in bytes without reading it, or null when the build has no log. */
+export async function fetchConsoleSize(job: string, number: number): Promise<number | null> {
+  return (await jenkinsLogSize(consoleLogPath(job, number)))?.size_bytes ?? null;
+}
+
+/** The link to a step's log page, for a reader. */
+export function stepLogUrl(baseUrl: string, job: string, number: number, stepId: string): string {
+  return `${baseUrl}${job}/${number}/execution/node/${stepId}/log/`;
 }
 
 /**
@@ -205,7 +288,7 @@ export async function fetchStepLog(job: string, number: number, stepId: string):
   if (!log) return null;
   if (!log.hasMore) return { text: log.text ?? "", truncated: false };
 
-  const full = await jenkinsText(`${job}/${number}/execution/node/${stepId}/log/progressiveText?start=0`);
+  const full = await jenkinsText(`${stepLogPath(job, number, stepId)}?start=0`);
   return full !== null ? { text: full, truncated: false } : { text: log.text ?? "", truncated: true };
 }
 
