@@ -96,7 +96,7 @@ export function registerJenkinsTools(server: McpServer): void {
 
   server.tool(
     "listJenkinsBuilds",
-    "The most recent builds of a Jenkins job by name, newest first: number, result (SUCCESS, UNSTABLE, FAILURE, ABORTED, or null while building), started_local, duration and URL. Use it to find the build that ran on a given night or date before calling getJenkinsBuildReport with its build_number; a job that also builds on merges through the day has several builds per date, so pick by start time.",
+    "The most recent builds of a Jenkins job by name, newest first: number, result (SUCCESS, UNSTABLE, FAILURE, ABORTED, or null while building), started_local, duration, URL and commit. On a PR job the commit is the throwaway merge of the PR branch into its target that Jenkins built, never the branch tip Bitbucket records the status against, so it will not match the PR head and that is not a discrepancy. Use it to find the build that ran on a given night or date before calling getJenkinsBuildReport with its build_number; a job that also builds on merges through the day has several builds per date, so pick by start time.",
     {
       job: z.string().describe(JOB_DESCRIPTION),
       limit: z.number().optional().describe(`Builds to return (default ${DEFAULT_LIST_LIMIT}, max ${MAX_LIST_LIMIT})`),
